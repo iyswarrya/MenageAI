@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  family-receipt-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - USE_MCP_DEALS=true
+      - GOOGLE_GENAI_USE_VERTEXAI=true
+      - GOOGLE_CLOUD_PROJECT=ambient-expense-agent-500923
+      - GOOGLE_CLOUD_LOCATION=global
+      - GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json
+    volumes:
+      - shared-data:/app/app/db_data
+      # To run Vertex AI inside container, mount credentials:
+      - ~/.config/gcloud:/root/.config/gcloud
+    restart: always
+
+  family-retail-mcp-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.mcp
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - shared-data:/app/app/db_data
+    restart: always
+
+volumes:
+  shared-data:
