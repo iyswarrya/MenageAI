@@ -17,7 +17,7 @@ import os
 import logging
 from collections.abc import AsyncIterator
 from dotenv import load_dotenv
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Response, UploadFile, File, Form
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -128,10 +128,62 @@ async def agent_message(req: MessageRequest):
         user_id=req.user_id,
         session_id=session.id
     ):
-        if event.content and event.content.parts:
-            for part in event.content.parts:
-                if part.text:
-                    response_text += part.text
+        node_name = event.node_info.name if event.node_info else ""
+        if node_name in ("response_agent", "query_agent"):
+            if event.content and event.content.parts:
+                for part in event.content.parts:
+                    if part.text:
+                        response_text += part.text
+        elif node_name == "invalid_receipt_responder":
+            if event.output:
+                response_text += str(event.output)
+    return {"response": response_text, "session_id": session.id}
+
+
+@app.post("/agent/upload")
+async def agent_upload(
+    file: UploadFile = File(...),
+    user_id: str = Form("default_user"),
+    session_id: str = Form("default_session")
+):
+    """Executes the agent workflow with an uploaded receipt file."""
+    runner = app.state.runner
+    file_bytes = await file.read()
+    content_type = file.content_type or "image/jpeg"
+    
+    parts = [
+        types.Part.from_bytes(data=file_bytes, mime_type=content_type),
+        types.Part.from_text(text="Analyze this receipt image.")
+    ]
+    content = types.Content(role="user", parts=parts)
+    
+    session = await runner.session_service.get_session(
+        app_name=app.state.agent_app_name, 
+        session_id=session_id,
+        user_id=user_id
+    )
+    if not session:
+        session = await runner.session_service.create_session(
+            user_id=user_id, 
+            app_name=app.state.agent_app_name, 
+            session_id=session_id
+        )
+        
+    response_text = ""
+    async for event in runner.run_async(
+        new_message=content,
+        user_id=user_id,
+        session_id=session.id
+    ):
+        node_name = event.node_info.name if event.node_info else ""
+        if node_name in ("response_agent", "query_agent"):
+            if event.content and event.content.parts:
+                for part in event.content.parts:
+                    if part.text:
+                        response_text += part.text
+        elif node_name == "invalid_receipt_responder":
+            if event.output:
+                response_text += str(event.output)
     return {"response": response_text, "session_id": session.id}
 
 
@@ -203,8 +255,9 @@ def collect_feedback(feedback: Feedback) -> dict[str, str]:
 static_dir = os.path.join(AGENT_DIR, "app", "static")
 os.makedirs(static_dir, exist_ok=True)
 
-# Mount index.html at root "/"
+# Mount index.html at root "/" and "/chat"
 @app.get("/")
+@app.get("/chat")
 def read_root():
     return FileResponse(os.path.join(static_dir, "index.html"))
 

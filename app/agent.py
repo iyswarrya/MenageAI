@@ -280,9 +280,16 @@ def validate_receipt_extraction(node_input: ReceiptData, ctx=None) -> Event:
     if ctx and hasattr(ctx, "state") and "sanitized_text" in ctx.state:
         sanitized_text = ctx.state["sanitized_text"]
         
-    # Fallback to source_text_excerpt if sanitized_text is empty (common for image uploads)
-    if not sanitized_text.strip() and node_input.source_text_excerpt:
-        sanitized_text = node_input.source_text_excerpt
+    # Use the actual document transcription if available, especially when image/file parts are uploaded
+    if node_input.source_text_excerpt:
+        is_placeholder = (
+            not sanitized_text.strip() or 
+            "analyze this" in sanitized_text.lower() or 
+            "provided image" in sanitized_text.lower()
+        )
+        has_image = ctx and hasattr(ctx, "state") and ctx.state.get("image_parts")
+        if is_placeholder or has_image:
+            sanitized_text = node_input.source_text_excerpt
         
     source_lower = sanitized_text.lower().strip()
     norm_source = normalize_text(sanitized_text)
