@@ -193,15 +193,32 @@ def query_purchase_history(search_term: str) -> Dict[str, Any]:
     Returns:
         A dict containing 'results', which is a list of matching purchase records.
     """
+    import re
+    cleaned = re.sub(r'[^\w\s]', ' ', search_term)
+    tokens = [t.lower().strip() for t in cleaned.split() if len(t.strip()) >= 2]
+    
+    if not tokens:
+        tokens = [search_term.lower().strip()]
+        
+    query_parts = []
+    params = []
+    for token in tokens:
+        query_parts.append("(LOWER(i.name) LIKE ? OR LOWER(r.store) LIKE ?)")
+        params.extend([f"%{token}%", f"%{token}%"])
+        
+    where_clause = " OR ".join(query_parts)
+    
+    sql = f"""
+        SELECT r.store, r.date, i.name, i.price
+        FROM items i
+        JOIN receipts r ON i.receipt_id = r.id
+        WHERE {where_clause}
+        ORDER BY r.date DESC
+    """
+    
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT r.store, r.date, i.name, i.price
-            FROM items i
-            JOIN receipts r ON i.receipt_id = r.id
-            WHERE LOWER(i.name) LIKE ? OR LOWER(r.store) LIKE ?
-            ORDER BY r.date DESC
-        """, (f"%{search_term.lower().strip()}%", f"%{search_term.lower().strip()}%"))
+        cursor.execute(sql, params)
         
         results = []
         for row in cursor.fetchall():
@@ -211,6 +228,26 @@ def query_purchase_history(search_term: str) -> Dict[str, Any]:
                 "item_name": row["name"],
                 "price": row["price"]
             })
+            
+        # Fallback to appending the latest 50 purchases if we have few targeted matches
+        if len(results) < 10:
+            cursor.execute("""
+                SELECT r.store, r.date, i.name, i.price
+                FROM items i
+                JOIN receipts r ON i.receipt_id = r.id
+                ORDER BY r.date DESC
+                LIMIT 50
+            """)
+            existing = {(row["store"].lower(), row["date"], row["item_name"].lower()) for row in results}
+            for row in cursor.fetchall():
+                key = (row["store"].lower(), row["date"], row["name"].lower())
+                if key not in existing:
+                    results.append({
+                        "store": row["store"],
+                        "date": row["date"],
+                        "item_name": row["name"],
+                        "price": row["price"]
+                    })
         return {"results": results}
 
 
