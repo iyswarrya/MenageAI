@@ -33,7 +33,7 @@ class GeminiReceiptParser:
     def __init__(self, model_name: str = "gemini-2.5-flash"):
         self.model_name = model_name
 
-    def parse(self, input_text: str) -> ReceiptData:
+    def parse(self, input_text: str, image_parts: Optional[List[Any]] = None) -> ReceiptData:
         """Parses receipt text or image using Gemini structured outputs."""
         use_vertex = os.environ.get("GOOGLE_GENAI_USE_VERTEXAI", "false").lower() == "true"
         project = os.environ.get("GOOGLE_CLOUD_PROJECT")
@@ -46,8 +46,11 @@ class GeminiReceiptParser:
             
         today_str = datetime.date.today().strftime("%Y-%m-%d")
         
+        content_input = []
+        if image_parts:
+            content_input.extend(image_parts)
+            
         # Check if the input is a JSON string containing image_url
-        content_input = input_text
         if isinstance(input_text, str) and input_text.strip().startswith("{"):
             try:
                 img_data = json.loads(input_text)
@@ -61,12 +64,16 @@ class GeminiReceiptParser:
                     if img_resp.status_code == 200:
                         image_bytes = img_resp.content
                         content_type = img_resp.headers.get("content-type", "image/jpeg")
-                        content_input = [
-                            types.Part.from_bytes(data=image_bytes, mime_type=content_type),
-                            "Analyze this receipt image and extract the details."
-                        ]
+                        content_input.append(types.Part.from_bytes(data=image_bytes, mime_type=content_type))
             except Exception as e:
                 logger.warning(f"Failed to resolve image_url in receipt parser: {e}")
+                
+        # Append text part if it's not JSON
+        if isinstance(input_text, str) and not input_text.strip().startswith("{"):
+            content_input.append(input_text)
+        else:
+            if not content_input:
+                content_input.append("Analyze this receipt image and extract the details.")
         
         response = client.models.generate_content(
             model=self.model_name,
@@ -83,19 +90,20 @@ Populate `receipt_type` with one of these values.
 
 CRITICAL GROUNDING RULES:
 1. ONLY extract items, store, date, and prices that are explicitly visible/present in the input. Never invent items, stores, dates, totals, or prices.
-2. Store name: Extract only if visible in text, logo, reward program, or domain name (e.g., Target Circle or informtarget.com implies Target; Amazon.com or amazon logo implies Amazon). If missing or unclear, return "unknown" or null. Do NOT infer a store from product names alone (e.g., buying a Nike product does not mean the store is Nike).
-3. Receipt date: Extract in YYYY-MM-DD format if visible. If missing or unclear, return today's date ({today_str}) and add a warning to the `warnings` list that the date was guessed/defaulted.
-4. List of items:
+2. If the input is empty, blank, or contains only generic/placeholder text like "Provided image of a receipt." or "Provided image." with no actual receipt text, OCR data, or image parts attached, you MUST set `extraction_confidence` to 0.0, set `store` to "unknown", leave `items` as empty, set `total` to 0.0, and add a warning: "No discernible receipt information found in the input."
+3. Store name: Extract only if visible in text, logo, reward program, or domain name (e.g., Target Circle or informtarget.com implies Target; Amazon.com or amazon logo implies Amazon). If missing or unclear, return "unknown" or null. Do NOT infer a store from product names alone (e.g., buying a Nike product does not mean the store is Nike).
+4. Receipt date: Extract in YYYY-MM-DD format if visible. If missing or unclear, return today's date ({today_str}) and add a warning to the `warnings` list that the date was guessed/defaulted.
+5. List of items:
    - Extract item lines from sections like "Arriving today", "Ordered", "Shipped", "Items", or traditional receipt listings.
    - For each item, extract its specific name, price, quantity (default to 1), confidence score (0.0 to 1.0 based on how clear it is), the `raw_line` from the input representing this item, and the `seller` (merchant or third-party seller, e.g. "Fanhao Shop") if explicitly mentioned.
    - Do NOT use generic department/section headers (like 'HEALTH AND BEAUTY', 'APPAREL', 'SPORTING GOODS') as item names unless the receipt lists them as line items with prices.
    - Do NOT invent or add common receipt items.
    - Do NOT reuse items from prior examples, mock data, or database memory.
    - Do NOT duplicate items unless they appear as separate lines in the input.
-5. Overall extraction confidence: Populate `extraction_confidence` (0.0 to 1.0) indicating how clear the receipt is.
-6. Warnings: Populate `warnings` with any issues encountered (e.g., "date missing", "total computed", "unclear handwritten text").
-7. Excerpt: Populate `source_text_excerpt` with the complete transcribed raw text of the receipt/invoice/order summary (including the store header, date, items list, and totals).
-8. Financial Fields:
+6. Overall extraction confidence: Populate `extraction_confidence` (0.0 to 1.0) indicating how clear the receipt is.
+7. Warnings: Populate `warnings` with any issues encountered (e.g., "date missing", "total computed", "unclear handwritten text").
+8. Excerpt: Populate `source_text_excerpt` with the complete transcribed raw text of the receipt/invoice/order summary (including the store header, date, items list, and totals).
+9. Financial Fields:
    - Extract `subtotal`, `tax` (default to 0.0 if not listed), `shipping` (default to 0.0 if not listed), and `grand_total` (total price paid including tax and shipping).
    - If there is an order ID or receipt confirmation number (e.g. # 112-2923048-7481024), extract it in `order_id`.
 

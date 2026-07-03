@@ -133,8 +133,13 @@ class DealsAgentOutput(BaseModel):
 def preprocess_input(node_input: types.Content, ctx=None) -> str:
     """Sanitizes user input by masking PII before running the agent."""
     text = ""
-    if node_input and node_input.parts:
-        text = "".join(part.text for part in node_input.parts if part.text)
+    image_parts = []
+    if node_input and hasattr(node_input, "parts") and node_input.parts:
+        for part in node_input.parts:
+            if part.text:
+                text += part.text
+            elif part.inline_data or part.file_data:
+                image_parts.append(part)
     elif isinstance(node_input, str):
         text = node_input
     
@@ -143,6 +148,7 @@ def preprocess_input(node_input: types.Content, ctx=None) -> str:
     
     if ctx and hasattr(ctx, "state"):
         ctx.state["sanitized_text"] = res.sanitized_text
+        ctx.state["image_parts"] = image_parts
         if "current_run" in ctx.state:
             ctx.state["current_run"]["pii_redacted_count"] = res.redacted_items_count
         
@@ -180,10 +186,13 @@ def router(node_input: Intent, ctx=None) -> Event:
     return evt
 
 
-def receipt_agent(node_input: str) -> ReceiptData:
+def receipt_agent(node_input: str, ctx=None) -> ReceiptData:
     """Parses receipt data using the registered parser."""
     registry.logger.log_input("receipt_agent", node_input)
-    receipt_data = registry.receipt_parser.parse(node_input)
+    image_parts = []
+    if ctx and hasattr(ctx, "state"):
+        image_parts = ctx.state.get("image_parts", [])
+    receipt_data = registry.receipt_parser.parse(node_input, image_parts=image_parts)
     registry.logger.log_output("receipt_agent", receipt_data)
     return receipt_data
 
@@ -502,6 +511,8 @@ response_agent = LlmAgent(
     ),
     instruction="""You are a friendly family coordinator.
 Formulate a concise WhatsApp-style receipt summary based on the input details (purchased items, totals, duplicate warnings, and price drop deals).
+
+CRITICAL RULE: Rely ONLY on the structured input details (items, store, prices, warnings, deals) passed directly to this node for the current turn. Do NOT include, mention, or carry over any items, stores, dates, or prices from previous receipts or messages in the conversation history. Treat each receipt summary as completely isolated.
 
 Rules:
 1. Keep it short, casual, and highly scannable (WhatsApp style).

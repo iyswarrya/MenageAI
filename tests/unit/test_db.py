@@ -96,17 +96,18 @@ def test_get_deals_for_items():
     assert len(alerts_no_deal) == 0
 
 def test_query_purchase_history():
-    """Verifies querying purchase history returns matching records."""
+    """Verifies querying purchase history returns matching records using token splitting and fallback."""
     db.save_receipt_and_items("Trader Joe's", "2026-07-01", 10.99, [("Olive Oil", 8.99), ("Salt", 2.00)])
-    db.save_receipt_and_items("Safeway", "2026-06-30", 3.49, [("Milk", 3.49)])
+    db.save_receipt_and_items("Target", "2026-06-10", 10.00, [("Shirts T", 10.00)])
 
-    # Search for item name
-    results_oil = db.query_purchase_history("oil")["results"]
-    assert len(results_oil) == 1
-    assert results_oil[0]["item_name"] == "Olive Oil"
-    assert results_oil[0]["store"] == "Trader Joe's"
+    # 1. Search for item name token (multi-word, hyphenated query)
+    results_tshirts = db.query_purchase_history("T-shirts")["results"]
+    assert len(results_tshirts) >= 1
+    # Check that "Shirts T" matches due to the "shirts" token
+    matching_shirts = [r for r in results_tshirts if r["item_name"] == "Shirts T"]
+    assert len(matching_shirts) == 1
 
-    # Search for store name
+    # 2. Search for store name (partial)
     results_store = db.query_purchase_history("Trader")["results"]
-    assert len(results_store) == 2  # both Olive Oil and Salt
-    assert results_store[0]["store"] == "Trader Joe's"
+    assert len(results_store) >= 2  # Olive Oil and Salt (and potentially fallback matches)
+    assert any(r["store"] == "Trader Joe's" for r in results_store)
