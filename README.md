@@ -1,4 +1,4 @@
-# family-receipt-agent
+# MenageAI - AI-powered household purchase memory
 
 Simple ReAct agent
 Agent generated with `agents-cli` version `1.0.0`
