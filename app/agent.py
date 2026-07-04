@@ -362,7 +362,17 @@ def validate_receipt_extraction(node_input: ReceiptData, ctx=None) -> Event:
                                 
         # Fallback to global substring search in normalized text if line-by-line fails
         norm_global = normalize_text(source_txt)
-        name_in_source = (norm_raw in norm_global) if norm_raw else (norm_name in norm_global)
+        name_in_source = (norm_raw in norm_global) or (norm_name in norm_global)
+        
+        # Token-based fallback check if name is split by columns/other lines
+        if not name_in_source:
+            import re
+            name_words = [w for w in re.split(r'\W+', item_name.lower()) if len(w) > 2 and not w.isdigit()]
+            if name_words:
+                matched_words = [w for w in name_words if w in source_txt.lower()]
+                if len(matched_words) / len(name_words) >= 0.75:
+                    name_in_source = True
+
         price_in_source = (price_str in norm_global) or (price_int_str in norm_global)
         return name_in_source and price_in_source
 
