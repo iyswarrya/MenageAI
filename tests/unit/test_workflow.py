@@ -175,3 +175,35 @@ async def test_pii_masking_integration():
         row = cursor.fetchone()
         assert row is not None
         assert "Safeway" in row["store"]
+
+
+@pytest.mark.asyncio
+async def test_invalid_receipt_flow():
+    """Test invalid receipt flow."""
+    session_service = InMemorySessionService()
+    session = await session_service.create_session(user_id="test_user", app_name="app")
+    runner = Runner(agent=root_agent, session_service=session_service, app_name="app")
+
+    message = types.Content(
+        role="user",
+        parts=[
+            types.Part.from_text(text="Analyze this receipt image."),
+            types.Part.from_text(text="Fake receipt text with zero matches")
+        ]
+    )
+
+    print("STARTING INVALID RECEIPT TEST RUN")
+    response_text = ""
+    async for event in runner.run_async(
+        new_message=message,
+        user_id="test_user",
+        session_id=session.id
+    ):
+        node_name = event.node_info.name if event.node_info else "unknown"
+        print(f"EVENT: node={node_name}, output={getattr(event, 'output', None)}")
+        if node_name == "invalid_receipt_responder":
+            if event.output:
+                response_text += str(event.output)
+
+    print(f"FINISHED RUN, RESPONSE: {response_text}")
+    assert "could not reliably read" in response_text
