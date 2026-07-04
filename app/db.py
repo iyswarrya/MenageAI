@@ -24,9 +24,16 @@ def init_db():
                 store TEXT NOT NULL,
                 date TEXT NOT NULL,
                 total REAL NOT NULL,
+                household_id TEXT NOT NULL DEFAULT 'default',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        
+        # Migration: Ensure receipts table has household_id column
+        try:
+            cursor.execute("ALTER TABLE receipts ADD COLUMN household_id TEXT NOT NULL DEFAULT 'default'")
+        except sqlite3.OperationalError:
+            pass
         
         # Create items table
         cursor.execute("""
@@ -94,17 +101,17 @@ def init_db():
             )
         conn.commit()
 
-def check_duplicate_receipt(store: str, date: str, total: float) -> bool:
+def check_duplicate_receipt(store: str, date: str, total: float, household_id: str = "default") -> bool:
     """Checks if a receipt with same store, date, and total already exists."""
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT id FROM receipts WHERE LOWER(store) = LOWER(?) AND date = ? AND ABS(total - ?) < 0.01",
-            (store.strip(), date.strip(), total)
+            "SELECT id FROM receipts WHERE LOWER(store) = LOWER(?) AND date = ? AND ABS(total - ?) < 0.01 AND household_id = ?",
+            (store.strip(), date.strip(), total, household_id)
         )
         return cursor.fetchone() is not None
 
-def check_duplicate_items(store: str, date_str: str, items: List[Tuple[str, float]]) -> List[str]:
+def check_duplicate_items(store: str, date_str: str, items: List[Tuple[str, float]], household_id: str = "default") -> List[str]:
     """
     Checks if any of the items in the receipt were purchased recently (within 1 day).
     Returns list of duplicate item messages.
@@ -131,7 +138,8 @@ def check_duplicate_items(store: str, date_str: str, items: List[Tuple[str, floa
                 WHERE LOWER(r.store) = LOWER(?) 
                   AND r.date BETWEEN ? AND ? 
                   AND LOWER(i.name) LIKE ?
-            """, (store.strip(), start_date, end_date, f"%{item_name.lower().strip()}%"))
+                  AND r.household_id = ?
+            """, (store.strip(), start_date, end_date, f"%{item_name.lower().strip()}%", household_id))
             
             matches = cursor.fetchall()
             if matches:
@@ -141,13 +149,13 @@ def check_duplicate_items(store: str, date_str: str, items: List[Tuple[str, floa
                     )
     return duplicates
 
-def save_receipt_and_items(store: str, date: str, total: float, items: List[Tuple[str, float]]) -> int:
+def save_receipt_and_items(store: str, date: str, total: float, items: List[Tuple[str, float]], household_id: str = "default") -> int:
     """Saves a receipt and its associated items to SQLite. Returns receipt ID."""
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO receipts (store, date, total) VALUES (?, ?, ?)",
-            (store.strip(), date.strip(), total)
+            "INSERT INTO receipts (store, date, total, household_id) VALUES (?, ?, ?, ?)",
+            (store.strip(), date.strip(), total, household_id)
         )
         receipt_id = cursor.lastrowid
         
@@ -183,12 +191,13 @@ def get_deals_for_items(items: List[Tuple[str, float]]) -> List[Dict[str, Any]]:
                     })
     return deals_alerts
 
-def query_purchase_history(search_term: str) -> Dict[str, Any]:
+def query_purchase_history(search_term: str, household_id: str = "default") -> Dict[str, Any]:
     """
     Searches the database for past purchases of items matching the search term.
     
     Args:
         search_term: The search term to find in item names or store names.
+        household_id: The context household/session ID.
 
     Returns:
         A dict containing 'results', which is a list of matching purchase records.
@@ -212,9 +221,10 @@ def query_purchase_history(search_term: str) -> Dict[str, Any]:
         SELECT r.store, r.date, i.name, i.price
         FROM items i
         JOIN receipts r ON i.receipt_id = r.id
-        WHERE {where_clause}
+        WHERE ({where_clause}) AND r.household_id = ?
         ORDER BY r.date DESC
     """
+    params.append(household_id)
     
     with get_connection() as conn:
         cursor = conn.cursor()
@@ -235,9 +245,10 @@ def query_purchase_history(search_term: str) -> Dict[str, Any]:
                 SELECT r.store, r.date, i.name, i.price
                 FROM items i
                 JOIN receipts r ON i.receipt_id = r.id
+                WHERE r.household_id = ?
                 ORDER BY r.date DESC
                 LIMIT 50
-            """)
+            """, (household_id,))
             existing = {(row["store"].lower(), row["date"], row["item_name"].lower()) for row in results}
             for row in cursor.fetchall():
                 key = (row["store"].lower(), row["date"], row["name"].lower())
@@ -277,7 +288,7 @@ def log_agent_run(
         conn.commit()
 
 
-def get_agent_runs(limit: int = 20) -> List[Dict[str, Any]]:
+def get_agent_runs(limit: int = 20, household_id: str = "default") -> List[Dict[str, Any]]:
     """Retrieves the history of agent runs from the database."""
     with get_connection() as conn:
         cursor = conn.cursor()
@@ -285,9 +296,10 @@ def get_agent_runs(limit: int = 20) -> List[Dict[str, Any]]:
             SELECT id, request_id, household_id, user_id, intent, route_taken,
                    tools_called, mcp_success, pii_redacted_count, errors, timestamp
             FROM agent_runs
+            WHERE household_id = ?
             ORDER BY id DESC
             LIMIT ?
-        """, (limit,))
+        """, (household_id, limit))
         results = []
         for r in cursor.fetchall():
             results.append({
@@ -306,16 +318,17 @@ def get_agent_runs(limit: int = 20) -> List[Dict[str, Any]]:
         return results
 
 
-def get_all_purchases() -> List[Dict[str, Any]]:
-    """Retrieves all past purchases from the database."""
+def get_all_purchases(household_id: str = "default") -> List[Dict[str, Any]]:
+    """Retrieves all past purchases from the database for a specific household/session."""
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
             SELECT r.store, r.date, i.name, i.price
             FROM items i
             JOIN receipts r ON i.receipt_id = r.id
+            WHERE r.household_id = ?
             ORDER BY r.date DESC
-        """)
+        """, (household_id,))
         results = []
         for row in cursor.fetchall():
             results.append({

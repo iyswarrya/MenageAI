@@ -49,14 +49,14 @@ def test_agent_message_receipt_flow(clean_db, monkeypatch):
         assert data["session_id"] == "session_demo_1"
 
         # Verify receipt was saved to database
-        purchases = client.get("/purchases").json()
+        purchases = client.get("/purchases?session_id=session_demo_1").json()
         assert len(purchases) >= 1
         assert purchases[0]["store"] == "Safeway"
         assert purchases[0]["item_name"] == "Coffee"
         assert purchases[0]["price"] == 9.99
 
         # Verify agent run was logged to agent_runs
-        runs = client.get("/agent/runs").json()
+        runs = client.get("/agent/runs?session_id=session_demo_1").json()
         assert len(runs) >= 1
         assert runs[0]["intent"] == "receipt"
         assert runs[0]["route_taken"] == "receipt"
@@ -66,7 +66,7 @@ def test_agent_message_receipt_flow(clean_db, monkeypatch):
 def test_agent_message_query_flow(clean_db):
     """Verify memory queries bypass receipt ingestion and search history."""
     # Pre-seed database with a purchase
-    db.save_receipt_and_items("Trader Joe's", "2026-07-01", 5.99, [("Avocados", 5.99)])
+    db.save_receipt_and_items("Trader Joe's", "2026-07-01", 5.99, [("Avocados", 5.99)], household_id="session_demo_2")
     
     with TestClient(app) as client:
         payload = {
@@ -80,7 +80,7 @@ def test_agent_message_query_flow(clean_db):
         assert "Trader" in response_text or "trader" in response_text.lower()
 
         # Verify run was logged and tools_called includes query_purchase_history
-        runs = client.get("/agent/runs").json()
+        runs = client.get("/agent/runs?session_id=session_demo_2").json()
         assert len(runs) >= 1
         assert runs[0]["intent"] == "query"
         assert runs[0]["route_taken"] == "query"
@@ -106,7 +106,7 @@ def test_mcp_fallback_behavior_in_api(clean_db, monkeypatch):
             assert response.status_code == 200
 
             # Verify the run was logged successfully and mcp_success is False (fallback occurred)
-            runs = client.get("/agent/runs").json()
+            runs = client.get("/agent/runs?session_id=session_demo_3").json()
             assert len(runs) >= 1
             assert runs[0]["mcp_success"] is False
         finally:

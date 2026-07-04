@@ -41,7 +41,7 @@ class MockReceiptParser:
 class MockMemoryRepository:
     def __init__(self):
         self.saved = []
-    def save_receipt(self, receipt: ReceiptData) -> SavedReceiptResult:
+    def save_receipt(self, receipt: ReceiptData, household_id: str = "default") -> SavedReceiptResult:
         self.saved.append(receipt)
         return SavedReceiptResult(receipt_id=100, success=True)
     def find_duplicates(self, items: List[ReceiptItem], store: str, date: str, household_id: str) -> List[DuplicateAlert]:

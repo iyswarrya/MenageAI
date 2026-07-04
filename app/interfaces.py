@@ -62,7 +62,7 @@ class ReceiptParser(Protocol):
 
 @runtime_checkable
 class PurchaseMemoryRepository(Protocol):
-    def save_receipt(self, receipt: ReceiptData) -> SavedReceiptResult:
+    def save_receipt(self, receipt: ReceiptData, household_id: str = "default") -> SavedReceiptResult:
         """Saves receipt data and its items to purchase history storage."""
         ...
         
