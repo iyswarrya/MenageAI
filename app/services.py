@@ -116,7 +116,7 @@ Keep names clean, descriptive, preserve brand names when present, and ground eve
 # --- SQLite Purchase Memory Repository Implementation ---
 
 class SqlitePurchaseMemoryRepository:
-    def save_receipt(self, receipt: ReceiptData) -> SavedReceiptResult:
+    def save_receipt(self, receipt: ReceiptData, household_id: str = "default") -> SavedReceiptResult:
         """Saves a receipt and its items to SQLite database."""
         try:
             items_tuples = [(item.name, item.price) for item in receipt.items]
@@ -124,7 +124,8 @@ class SqlitePurchaseMemoryRepository:
                 receipt.store,
                 receipt.date,
                 receipt.total,
-                items_tuples
+                items_tuples,
+                household_id
             )
             return SavedReceiptResult(receipt_id=receipt_id, success=True)
         except Exception as e:
@@ -138,12 +139,12 @@ class SqlitePurchaseMemoryRepository:
             return []
             
         items_tuples = [(item.name, item.price) for item in items]
-        warnings = db.check_duplicate_items(store, date, items_tuples)
+        warnings = db.check_duplicate_items(store, date, items_tuples, household_id)
         return [DuplicateAlert(message=msg) for msg in warnings]
 
     def query_purchase_history(self, query: str, household_id: str) -> List[PurchaseMatch]:
         """Queries historical purchases from SQLite database matching search term."""
-        db_results = db.query_purchase_history(query)
+        db_results = db.query_purchase_history(query, household_id)
         # db_results contains {"results": [...]}
         results = db_results.get("results", [])
         

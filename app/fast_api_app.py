@@ -349,17 +349,17 @@ async def twilio_webhook(
 
 
 @app.get("/purchases")
-def get_purchases():
+def get_purchases(session_id: str = "default"):
     """Returns all past purchases from the SQLite database."""
     from app import db
-    return db.get_all_purchases()
+    return db.get_all_purchases(household_id=session_id)
 
 
 @app.get("/agent/runs")
-def get_runs(limit: int = 20):
+def get_runs(limit: int = 20, session_id: str = "default"):
     """Returns logged agent execution history runs."""
     from app import db
-    return db.get_agent_runs(limit=limit)
+    return db.get_agent_runs(limit=limit, household_id=session_id)
 
 
 @app.get("/health")
@@ -411,19 +411,19 @@ def collect_feedback(feedback: Feedback) -> dict[str, str]:
     return {"status": "success"}
 
 
-# --- Serve Demo Web UI (Commented Out) ---
-# 
-# static_dir = os.path.join(AGENT_DIR, "app", "static")
-# os.makedirs(static_dir, exist_ok=True)
-# 
-# # Mount index.html at root "/" and "/chat"
-# @app.get("/")
-# @app.get("/chat")
-# def read_root():
-#     return FileResponse(os.path.join(static_dir, "index.html"))
-# 
-# # Mount all other static files
-# app.mount("/static", StaticFiles(directory=static_dir), name="static")
+#--- Serve Demo Web UI (Commented Out) ---
+
+static_dir = os.path.join(AGENT_DIR, "app", "static")
+os.makedirs(static_dir, exist_ok=True)
+
+# Mount index.html at root "/" and "/chat"
+@app.get("/")
+@app.get("/chat")
+def read_root():
+    return FileResponse(os.path.join(static_dir, "index.html"))
+
+# Mount all other static files
+app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 
 # Main execution

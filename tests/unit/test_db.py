@@ -111,3 +111,35 @@ def test_query_purchase_history():
     results_store = db.query_purchase_history("Trader")["results"]
     assert len(results_store) >= 2  # Olive Oil and Salt (and potentially fallback matches)
     assert any(r["store"] == "Trader Joe's" for r in results_store)
+
+def test_household_isolation():
+    """Verifies that queries, duplicate checks, and retrieves are completely isolated by household_id."""
+    items1 = [("Coffee", 9.99)]
+    db.save_receipt_and_items("Safeway", "2026-07-01", 9.99, items1, household_id="family_1")
+
+    items2 = [("Coffee", 9.99)]
+    db.save_receipt_and_items("Safeway", "2026-07-01", 9.99, items2, household_id="family_2")
+
+    # Duplicate check on family_1: should find duplicate
+    assert db.check_duplicate_receipt("Safeway", "2026-07-01", 9.99, household_id="family_1") is True
+    # Duplicate check on default family: should not find duplicate
+    assert db.check_duplicate_receipt("Safeway", "2026-07-01", 9.99, household_id="default") is False
+
+    # Item duplicate check on family_1: should find duplicate
+    dup_family_1 = db.check_duplicate_items("Safeway", "2026-07-01", [("Coffee", 9.99)], household_id="family_1")
+    assert len(dup_family_1) == 1
+    # Item duplicate check on default family: should not find duplicate
+    dup_default = db.check_duplicate_items("Safeway", "2026-07-01", [("Coffee", 9.99)], household_id="default")
+    assert len(dup_default) == 0
+
+    # Query purchase history on family_1: should find Coffee
+    results_family_1 = db.query_purchase_history("Coffee", household_id="family_1")["results"]
+    assert any(r["item_name"] == "Coffee" for r in results_family_1)
+    # Query purchase history on default: should not find Coffee
+    results_default = db.query_purchase_history("Coffee", household_id="default")["results"]
+    assert not any(r["item_name"] == "Coffee" for r in results_default)
+
+    # Get all purchases: family_1 should have 1 item
+    assert len(db.get_all_purchases(household_id="family_1")) == 1
+    # Get all purchases: default should have 0 items
+    assert len(db.get_all_purchases(household_id="default")) == 0

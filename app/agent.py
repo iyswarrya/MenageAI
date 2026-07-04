@@ -57,7 +57,7 @@ class AgentRunLoggerPlugin(BasePlugin):
         session_state = invocation_context.session.state
         session_state["current_run"] = {
             "request_id": invocation_context.invocation_id or "local",
-            "household_id": "default",
+            "household_id": invocation_context.session.id or "default",
             "user_id": invocation_context.user_id or "default_user",
             "intent": "unknown",
             "route_taken": "unknown",
@@ -197,23 +197,27 @@ def receipt_agent(node_input: str, ctx=None) -> ReceiptData:
     return receipt_data
 
 
-def memory_agent(node_input: ReceiptData) -> MemoryAgentOutput:
+def memory_agent(node_input: ReceiptData, ctx=None) -> MemoryAgentOutput:
     """Stores the receipt and items in SQLite and checks for duplicate purchases."""
     registry.logger.log_input("memory_agent", node_input)
     
+    household_id = "default"
+    if ctx and hasattr(ctx, "state") and "current_run" in ctx.state:
+        household_id = ctx.state["current_run"].get("household_id", "default")
+        
     items = [ReceiptItem(name=item.name, price=item.price) for item in node_input.items]
-    is_duplicate_receipt = db.check_duplicate_receipt(node_input.store, node_input.date, node_input.total)
+    is_duplicate_receipt = db.check_duplicate_receipt(node_input.store, node_input.date, node_input.total, household_id)
     
     dup_alerts = registry.memory_repo.find_duplicates(
         items=items,
         store=node_input.store,
         date=node_input.date,
-        household_id="default"
+        household_id=household_id
     )
     duplicate_items_warnings = [alert.message for alert in dup_alerts]
     
     if not is_duplicate_receipt:
-        registry.memory_repo.save_receipt(node_input)
+        registry.memory_repo.save_receipt(node_input, household_id)
         
     res = MemoryAgentOutput(
         receipt=node_input,
@@ -536,18 +540,24 @@ Rules:
 
 
 # Node 5: Query Agent Tool
-def query_purchase_history(search_term: str) -> Dict[str, Any]:
+def query_purchase_history(search_term: str, tool_context=None) -> Dict[str, Any]:
     """
     Searches the database for past purchases of items matching the search term.
     
     Args:
         search_term: The search term to find in item names or store names.
+        tool_context: ADK ToolContext injected automatically.
 
     Returns:
         A dict containing 'results', which is a list of matching purchase records.
     """
     registry.logger.log_tool_call("query_agent", "query_purchase_history", {"search_term": search_term})
-    results = registry.memory_repo.query_purchase_history(search_term, household_id="default")
+    
+    household_id = "default"
+    if tool_context and hasattr(tool_context, "state") and "current_run" in tool_context.state:
+        household_id = tool_context.state["current_run"].get("household_id", "default")
+        
+    results = registry.memory_repo.query_purchase_history(search_term, household_id=household_id)
     
     formatted = {
         "results": [
