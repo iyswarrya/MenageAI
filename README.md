@@ -1,4 +1,4 @@
-# MenageAI - AI-powered household purchase memory
+# MenageAI: AI-powered household purchase memory
 
 Simple ReAct agent
 Agent generated with `agents-cli` version `1.0.0`
@@ -6,7 +6,7 @@ Agent generated with `agents-cli` version `1.0.0`
 ## Project Structure
 
 ```
-family-receipt-agent/
+menage-ai-agent/
 ├── app/         # Core agent code
 │   ├── agent.py               # Main agent logic & graph definitions
 │   ├── interfaces.py          # Service Protocols & shared schemas
@@ -15,14 +15,17 @@ family-receipt-agent/
 │   ├── pii.py                 # Regex PII scrubber
 │   ├── fast_api_app.py        # FastAPI Backend server
 │   └── app_utils/             # App utilities and helpers
+├── deployment/  # Google Cloud deployment files & Terraform templates
 ├── tests/                     # Unit, integration, and load tests
+├── Dockerfile                 # Cloud Run deployment Dockerfile
+├── docker-compose.yml         # Local container orchestration
 ├── GEMINI.md                  # AI-assisted development guide
 └── pyproject.toml             # Project dependencies
 ```
 
 ## Architecture & Interface Design
 
-The `family-receipt-agent` uses an interface-driven architecture defined via Python `typing.Protocol` classes. All core external dependencies—such as database access, deals clients, LLM receipt parsing, and PII redactors—are resolved through a central service registry. 
+The `menage-ai-agent` uses an interface-driven architecture defined via Python `typing.Protocol` classes. All core external dependencies—such as database access, deals clients, LLM receipt parsing, and PII redactors—are resolved through a central service registry. 
 
 This design:
 1. **Prevents Vendor Lock-in**: Decouples the ADK graph workflow logic from SQLite or specific LLM parsing helpers. We can easily swap SQLite with Firestore/Cloud SQL, mock deals with a live deals provider or MCP Client, and PII masking with Google Cloud DLP without editing the workflow.
@@ -96,13 +99,13 @@ Edit your agent logic in `app/agent.py` and test with `agents-cli playground` - 
 
 ## Deployment
 
-```bash
-gcloud config set project <your-project-id>
-agents-cli deploy
-```
+For comprehensive deployment instructions, required GCP APIs, environment variables, permissions, and manual setup guides, please refer to the detailed:
+👉 **[deployment/README.md](deployment/README.md)**
 
-To add CI/CD and Terraform, run `agents-cli scaffold enhance`.
-To set up your production infrastructure, run `agents-cli infra cicd`.
+To add CI/CD and Terraform infrastructure configurations, run:
+```bash
+agents-cli scaffold enhance
+```
 
 ## Observability
 
@@ -141,6 +144,15 @@ You can also run or test it using MCP inspector tools or add it to your desktop 
 ### Disabling MCP / SQLite Fallback
 - **Disabling MCP**: Set `USE_MCP_DEALS=false` in your `.env` file. The agent will bypass the MCP client entirely and use `SqliteDealsClient` (which queries the SQLite database directly).
 - **Auto Fallback**: If `USE_MCP_DEALS=true` but the MCP server crashes, is missing python dependencies, or the command fails, `MCPDealsClient` automatically catches the exception, logs a warning, and falls back to `SqliteDealsClient` so the agent keeps running without failing.
+
+
+## 💬 Twilio WhatsApp Integration
+
+The application includes complete support for mobile WhatsApp interaction via Twilio webhooks:
+* **Webhook Endpoint**: `POST /twilio/webhook`
+* When an image (photo of a receipt) or text query is sent to your Twilio WhatsApp number, the webhook asynchronously parses the receipt, registers the transaction, and sends back the coordinator response.
+* **Security & Sandboxing**: Messages and ledgers are sandboxed under the Twilio family ID so that different users' ledger data is kept secure.
+* **Setup**: Configure the Twilio WhatsApp Sandbox or Production number webhook URL to point to `https://<your-deployed-service-url>/twilio/webhook`.
 
 
 ## 🐳 Docker Containerization & Submissions
