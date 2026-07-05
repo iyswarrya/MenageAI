@@ -26,11 +26,12 @@ COPY mcp_server/ ./mcp_server/
 COPY pyproject.toml ./
 
 # Expose FastAPI port
-EXPOSE 8000
+EXPOSE 8080
 
 # Set environment variable defaults
 ENV USE_MCP_DEALS=true
 ENV PYTHONUNBUFFERED=1
+ENV PORT=8080
 
 # Command to run FastAPI server
-CMD ["uv", "run", "uvicorn", "app.fast_api_app:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "uv run uvicorn app.fast_api_app:app --host 0.0.0.0 --port ${PORT}"]
