@@ -2,7 +2,7 @@ import os
 import json
 import pytest
 from app.interfaces import registry, DealAlert, DealsClient
-from app.agent import deals_agent, preprocess_input, MemoryAgentOutput, ReceiptData, ReceiptItem
+from app.agent import deals_engine, preprocess_input, MemoryAgentOutput, ReceiptData, ReceiptItem
 from app.services import MCPDealsClient, SqliteDealsClient
 from mcp_server.retail_server import lookup_price, check_price_drop, get_store_return_policy
 from google.genai import types
@@ -45,8 +45,8 @@ def test_mcp_deals_client_conformance():
     client = MCPDealsClient(fallback_client=sqlite_deals)
     assert isinstance(client, DealsClient)
 
-def test_deals_agent_works_with_mcp_client(monkeypatch):
-    """Test 3: Verify deals_agent works end-to-end with MCPDealsClient."""
+def test_deals_engine_works_with_mcp_client(monkeypatch):
+    """Test 3: Verify deals_engine works end-to-end with MCPDealsClient."""
     monkeypatch.setenv("USE_MCP_DEALS", "true")
     sqlite_deals = SqliteDealsClient()
     mcp_deals = MCPDealsClient(fallback_client=sqlite_deals)
@@ -68,7 +68,7 @@ def test_deals_agent_works_with_mcp_client(monkeypatch):
             duplicate_items=[]
         )
         
-        output = deals_agent(input_data)
+        output = deals_engine(input_data)
         
         # Verify it fetched the deal via the MCP server
         assert len(output.deals) == 1
