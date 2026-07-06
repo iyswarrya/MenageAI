@@ -24,6 +24,10 @@ def lookup_price(product_name: str) -> str:
     """
     Looks up existing deals in the database for a specific product name.
     
+    NOTE: In production, you can replace this SQLite mock query with a call to a 
+    real shopping API (e.g. Google Shopping API or SerpApi) to retrieve live, 
+    real-world deals.
+    
     Args:
         product_name: The name of the product to search.
     """
@@ -48,6 +52,10 @@ def lookup_price(product_name: str) -> str:
 def check_price_drop(product_name: str, paid_price: float) -> str:
     """
     Checks if a lower price deal exists compared to the paid price.
+    
+    NOTE: In production, you can replace this SQLite mock query with a call to a 
+    real shopping API (e.g. Google Shopping API or SerpApi) to retrieve live, 
+    real-world deals.
     
     Args:
         product_name: The name of the product.
@@ -77,17 +85,19 @@ def get_store_return_policy(store_name: str) -> str:
     Returns the return policy details for a given store name.
     
     Args:
-        store_name: The name of the store (e.g. Costco, Target, Safeway).
+        store_name: The name of the store.
     """
-    store_lower = store_name.lower().strip()
-    if "costco" in store_lower:
-        return "Costco return policy: Return most items within 90 days or anytime for 100% satisfaction."
-    elif "target" in store_lower:
-        return "Target return policy: Most unopened items in new condition can be returned within 90 days."
-    elif "safeway" in store_lower:
-        return "Safeway return policy: Refund or exchange within 15 days with receipt."
-    else:
-        return f"Return policy for {store_name} is not in our database. Standard 30-day return policy applies."
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT policy_text FROM store_policies WHERE LOWER(?) LIKE '%' || LOWER(store_name) || '%'",
+            (store_name.lower().strip(),)
+        )
+        row = cursor.fetchone()
+        if row:
+            return f"{store_name} return policy: {row['policy_text']}"
+            
+    return f"Return policy for {store_name}: Standard 30-day return policy applies."
 
 if __name__ == "__main__":
     mcp.run()

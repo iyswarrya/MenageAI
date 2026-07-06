@@ -197,9 +197,9 @@ def receipt_agent(node_input: str, ctx=None) -> ReceiptData:
     return receipt_data
 
 
-def memory_agent(node_input: ReceiptData, ctx=None) -> MemoryAgentOutput:
+def memory_engine(node_input: ReceiptData, ctx=None) -> MemoryAgentOutput:
     """Stores the receipt and items in SQLite and checks for duplicate purchases."""
-    registry.logger.log_input("memory_agent", node_input)
+    registry.logger.log_input("memory_engine", node_input)
     
     household_id = "default"
     if ctx and hasattr(ctx, "state") and "current_run" in ctx.state:
@@ -224,13 +224,13 @@ def memory_agent(node_input: ReceiptData, ctx=None) -> MemoryAgentOutput:
         is_duplicate_receipt=is_duplicate_receipt,
         duplicate_items=duplicate_items_warnings
     )
-    registry.logger.log_output("memory_agent", res)
+    registry.logger.log_output("memory_engine", res)
     return res
 
 
-def deals_agent(node_input: MemoryAgentOutput) -> DealsAgentOutput:
+def deals_engine(node_input: MemoryAgentOutput) -> DealsAgentOutput:
     """Checks the database mock deals to find better prices or price drops."""
-    registry.logger.log_input("deals_agent", node_input)
+    registry.logger.log_input("deals_engine", node_input)
     
     deals_alerts = []
     for item in node_input.receipt.items:
@@ -252,7 +252,7 @@ def deals_agent(node_input: MemoryAgentOutput) -> DealsAgentOutput:
         duplicate_items=node_input.duplicate_items,
         deals=deals_alerts
     )
-    registry.logger.log_output("deals_agent", res)
+    registry.logger.log_output("deals_engine", res)
     return res
 
 
@@ -607,8 +607,8 @@ router_node = node(name="router")(router)
 receipt_agent_node = node(name="receipt_agent")(receipt_agent)
 validate_receipt_extraction_node = node(name="validate_receipt_extraction")(validate_receipt_extraction)
 invalid_receipt_responder_node = node(name="invalid_receipt_responder")(invalid_receipt_responder)
-memory_agent_node = node(name="memory_agent")(memory_agent)
-deals_agent_node = node(name="deals_agent")(deals_agent)
+memory_engine_node = node(name="memory_engine")(memory_engine)
+deals_engine_node = node(name="deals_engine")(deals_engine)
 
 
 # --- Workflow Graph Definition ---
@@ -629,11 +629,11 @@ root_agent = Workflow(
         # Receipt analysis path
         (receipt_agent_node, validate_receipt_extraction_node),
         (validate_receipt_extraction_node, {
-            "valid": memory_agent_node,
+            "valid": memory_engine_node,
             "invalid": invalid_receipt_responder_node
         }),
-        (memory_agent_node, deals_agent_node),
-        (deals_agent_node, response_agent),
+        (memory_engine_node, deals_engine_node),
+        (deals_engine_node, response_agent),
     ]
 )
 

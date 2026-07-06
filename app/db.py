@@ -57,6 +57,15 @@ def init_db():
             )
         """)
         
+        # Create store_policies table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS store_policies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                store_name TEXT UNIQUE NOT NULL,
+                policy_text TEXT NOT NULL
+            )
+        """)
+        
         # Create agent_runs table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS agent_runs (
@@ -73,6 +82,19 @@ def init_db():
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        
+        # Seed store policies if table is empty
+        cursor.execute("SELECT COUNT(*) FROM store_policies")
+        if cursor.fetchone()[0] == 0:
+            store_policies = [
+                ("Costco", "Return most items within 90 days or anytime for 100% satisfaction."),
+                ("Target", "Most unopened items in new condition can be returned within 90 days."),
+                ("Safeway", "Refund or exchange within 15 days with receipt.")
+            ]
+            cursor.executemany(
+                "INSERT OR IGNORE INTO store_policies (store_name, policy_text) VALUES (?, ?)",
+                store_policies
+            )
         
         # Seed mock deals if table is empty
         cursor.execute("SELECT COUNT(*) FROM mock_deals")
