@@ -1,15 +1,15 @@
-import os
 import pytest
 from dotenv import load_dotenv
+
 load_dotenv()
 
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
+from app import db, pii
 from app.agent import root_agent
-from app import db
-from app import pii
+
 
 # Setup a clean test database for each test run
 @pytest.fixture(autouse=True)

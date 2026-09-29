@@ -1,7 +1,7 @@
-import os
-import sqlite3
 import pytest
+
 from app import db
+
 
 @pytest.fixture(autouse=True)
 def setup_test_db(monkeypatch, tmp_path):

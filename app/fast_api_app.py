@@ -13,19 +13,20 @@
 # limitations under the License.
 
 import contextlib
-import os
 import logging
+import os
 from collections.abc import AsyncIterator
-from dotenv import load_dotenv
-from fastapi import FastAPI, Response, UploadFile, File, Form, BackgroundTasks
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
-from pydantic import BaseModel
+
 import google.auth
 from a2a.server.tasks import InMemoryTaskStore
+from dotenv import load_dotenv
+from fastapi import BackgroundTasks, FastAPI, File, Form, Response, UploadFile
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from google.adk.cli.fast_api import get_fast_api_app
 from google.adk.runners import Runner
 from google.genai import types
+from pydantic import BaseModel
 
 from app.app_utils import services
 from app.app_utils.a2a import attach_a2a_routes
@@ -108,20 +109,20 @@ async def agent_message(req: MessageRequest):
     """Executes the agent workflow with user input."""
     runner = app.state.runner
     content = types.Content(role="user", parts=[types.Part.from_text(text=req.message)])
-    
+
     # Ensure session exists or create a new one
     session = await runner.session_service.get_session(
-        app_name=app.state.agent_app_name, 
+        app_name=app.state.agent_app_name,
         session_id=req.session_id,
         user_id=req.user_id
     )
     if not session:
         session = await runner.session_service.create_session(
-            user_id=req.user_id, 
-            app_name=app.state.agent_app_name, 
+            user_id=req.user_id,
+            app_name=app.state.agent_app_name,
             session_id=req.session_id
         )
-        
+
     response_text = ""
     async for event in runner.run_async(
         new_message=content,
@@ -150,25 +151,25 @@ async def agent_upload(
     runner = app.state.runner
     file_bytes = await file.read()
     content_type = file.content_type or "image/jpeg"
-    
+
     parts = [
         types.Part.from_bytes(data=file_bytes, mime_type=content_type),
         types.Part.from_text(text="Analyze this receipt image.")
     ]
     content = types.Content(role="user", parts=parts)
-    
+
     session = await runner.session_service.get_session(
-        app_name=app.state.agent_app_name, 
+        app_name=app.state.agent_app_name,
         session_id=session_id,
         user_id=user_id
     )
     if not session:
         session = await runner.session_service.create_session(
-            user_id=user_id, 
-            app_name=app.state.agent_app_name, 
+            user_id=user_id,
+            app_name=app.state.agent_app_name,
             session_id=session_id
         )
-        
+
     response_text = ""
     async for event in runner.run_async(
         new_message=content,
@@ -215,37 +216,37 @@ async def process_webhook_async(From: str, To: str, Body: str | None, MediaUrl0:
     sys_logger = logging.getLogger("twilio_integration")
     runner = app.state.runner
     agent_app_name = app.state.agent_app_name
-    
+
     session_id = "twilio_session_family"
     user_id = f"twilio_user_{From.replace('whatsapp:', '')}"
-    
+
     try:
         session = await runner.session_service.get_session(
-            app_name=agent_app_name, 
+            app_name=agent_app_name,
             session_id=session_id,
             user_id=user_id
         )
         if not session:
             session = await runner.session_service.create_session(
-                user_id=user_id, 
-                app_name=agent_app_name, 
+                user_id=user_id,
+                app_name=agent_app_name,
                 session_id=session_id
             )
-            
+
         parts = []
         text_message = Body.strip() if Body else ""
         is_receipt_upload = False
-        
+
         if MediaUrl0:
             is_receipt_upload = True
             try:
                 account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
                 auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
                 auth = (account_sid, auth_token) if account_sid and auth_token else None
-                
+
                 resp = requests.get(MediaUrl0, auth=auth, timeout=15)
                 sys_logger.info(f"Twilio media download status code: {resp.status_code}")
-                
+
                 if resp.status_code == 200:
                     content_type = resp.headers.get("content-type", "image/jpeg")
                     parts.append(
@@ -257,18 +258,18 @@ async def process_webhook_async(From: str, To: str, Body: str | None, MediaUrl0:
                     sys_logger.warning(f"Failed to download Twilio media: HTTP {resp.status_code}")
             except Exception as e:
                 sys_logger.error(f"Error downloading Twilio media: {e}")
-            
+
         if text_message:
             parts.append(types.Part.from_text(text=text_message))
-            
+
         if not parts:
             sys_logger.warning("No parts to process in background webhook.")
             return
-            
+
         content = types.Content(role="user", parts=parts)
         response_text = ""
         intent_detected = "query"
-        
+
         async for event in runner.run_async(
             new_message=content,
             user_id=user_id,
@@ -292,18 +293,18 @@ async def process_webhook_async(From: str, To: str, Body: str | None, MediaUrl0:
             elif node_name == "invalid_receipt_responder":
                 if event.output:
                     response_text += str(event.output)
-                    
+
         if not response_text:
             response_text = "Sorry, I encountered an issue processing your request."
-            
+
         account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
         auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
         twilio_number = To  # Use the actual incoming receiver address (To) as outbound From channel
-        
+
         if account_sid and auth_token and twilio_number:
             # 1. Send the response back directly to the sender
             twilio_send_message(account_sid, auth_token, twilio_number, From, response_text)
-            
+
             # 2. Proactive Broadcast:
             has_validation_failed = "could not reliably read" in response_text.lower() or "invalid receipt" in response_text.lower()
             if (intent_detected == "receipt" or is_receipt_upload) and not has_validation_failed:
@@ -333,7 +334,7 @@ async def twilio_webhook(
     """
     sys_logger = logging.getLogger("twilio_integration")
     sys_logger.info(f"Received Twilio Webhook from {From} to {To}. Offloading to background task...")
-    
+
     background_tasks.add_task(
         process_webhook_async,
         From,
@@ -341,7 +342,7 @@ async def twilio_webhook(
         Body,
         MediaUrl0
     )
-    
+
     # Return empty Response immediately to satisfy Twilio's 15s timeout window
     twiml_response = """<?xml version="1.0" encoding="UTF-8"?>
     <Response></Response>"""
@@ -367,7 +368,7 @@ def health():
     """Checks the health of database connection and MCP deals lookup."""
     from app import db
     from app.interfaces import registry
-    
+
     db_ok = False
     try:
         with db.get_connection() as conn:
@@ -375,21 +376,21 @@ def health():
             db_ok = True
     except Exception:
         pass
-        
+
     mcp_ok = False
     try:
         registry.deals_client.lookup_price("test_nonexistent_product_healthcheck")
         mcp_ok = True
     except Exception:
         pass
-        
+
     if not db_ok or not mcp_ok:
         return Response(
             content=f'{{"status": "unhealthy", "database": {str(db_ok).lower()}, "mcp": {str(mcp_ok).lower()}}}',
             status_code=500,
             media_type="application/json"
         )
-        
+
     return {"status": "healthy", "database": db_ok, "mcp": mcp_ok}
 
 

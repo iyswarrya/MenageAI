@@ -1,7 +1,6 @@
-import pytest
+from app.agent import invalid_receipt_responder, validate_receipt_extraction
 from app.interfaces import ReceiptData, ReceiptItem
-from app.agent import validate_receipt_extraction, invalid_receipt_responder
-from google.adk.events.event import Event
+
 
 class MockCtx:
     def __init__(self, sanitized_text: str):
@@ -18,7 +17,7 @@ def test_validation_passes_fully_grounded():
     # Input has coffee and bread
     sanitized = "Safeway Store\nCoffee: $9.99\nBread: $2.49\nTotal: $12.48"
     ctx = MockCtx(sanitized)
-    
+
     receipt = ReceiptData(
         store="Safeway",
         date="2026-07-02",
@@ -30,7 +29,7 @@ def test_validation_passes_fully_grounded():
         total=12.48,
         extraction_confidence=1.0
     )
-    
+
     event = validate_receipt_extraction(receipt, ctx=ctx)
     assert event.actions.route == "valid"
     assert event.output == receipt
@@ -39,7 +38,7 @@ def test_validation_rejects_hallucinations():
     # Input has coffee, but receipt extraction invents sunscreen and lotion
     sanitized = "Safeway Store\nCoffee: $9.99\nTotal: $9.99"
     ctx = MockCtx(sanitized)
-    
+
     receipt = ReceiptData(
         store="Safeway",
         date="2026-07-02",
@@ -52,7 +51,7 @@ def test_validation_rejects_hallucinations():
         total=31.61,
         extraction_confidence=0.9
     )
-    
+
     event = validate_receipt_extraction(receipt, ctx=ctx)
     assert event.actions.route == "invalid"
     assert "could not reliably read this receipt" in event.output
@@ -60,7 +59,7 @@ def test_validation_rejects_hallucinations():
 def test_validation_rejects_empty_items():
     sanitized = "Just random chat text that does not look like a receipt."
     ctx = MockCtx(sanitized)
-    
+
     receipt = ReceiptData(
         store="unknown",
         date="2026-07-02",
@@ -69,7 +68,7 @@ def test_validation_rejects_empty_items():
         total=0.0,
         extraction_confidence=0.2
     )
-    
+
     event = validate_receipt_extraction(receipt, ctx=ctx)
     assert event.actions.route == "invalid"
     assert "could not reliably read this receipt" in event.output
@@ -77,7 +76,7 @@ def test_validation_rejects_empty_items():
 def test_validation_rejects_low_confidence():
     sanitized = "Safeway Store\nCoffee: $9.99\nTotal: $9.99"
     ctx = MockCtx(sanitized)
-    
+
     receipt = ReceiptData(
         store="Safeway",
         date="2026-07-02",
@@ -86,7 +85,7 @@ def test_validation_rejects_low_confidence():
         total=9.99,
         extraction_confidence=0.3 # Low confidence
     )
-    
+
     event = validate_receipt_extraction(receipt, ctx=ctx)
     assert event.actions.route == "invalid"
     assert "could not reliably read this receipt" in event.output
@@ -95,7 +94,7 @@ def test_approximate_matching_passes():
     # Check if slight item formatting/case differences pass
     sanitized = "Whole Foods\nORGANIC HONEYCRISP APPLES - $4.99\nTotal: $4.99"
     ctx = MockCtx(sanitized)
-    
+
     receipt = ReceiptData(
         store="Whole Foods",
         date="2026-07-02",
@@ -104,7 +103,7 @@ def test_approximate_matching_passes():
         total=4.99,
         extraction_confidence=0.95
     )
-    
+
     event = validate_receipt_extraction(receipt, ctx=ctx)
     assert event.actions.route == "valid"
 

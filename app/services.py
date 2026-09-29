@@ -1,26 +1,26 @@
-import os
-import datetime
-import logging
-import json
 import asyncio
-from typing import List, Dict, Any, Optional, Tuple
+import datetime
+import json
+import logging
+import os
+from typing import Any
+
 from google import genai
 from google.genai import types
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+from app import db, pii
 from app.interfaces import (
-    ReceiptItem,
-    ReceiptData,
-    SavedReceiptResult,
+    DealAlert,
+    DealsClient,
     DuplicateAlert,
     PurchaseMatch,
-    DealAlert,
+    ReceiptData,
+    ReceiptItem,
     RedactionResult,
-    DealsClient
+    SavedReceiptResult,
 )
-from app import db
-from app import pii
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -33,23 +33,23 @@ class GeminiReceiptParser:
     def __init__(self, model_name: str = "gemini-2.5-flash"):
         self.model_name = model_name
 
-    def parse(self, input_text: str, image_parts: Optional[List[Any]] = None) -> ReceiptData:
+    def parse(self, input_text: str, image_parts: list[Any] | None = None) -> ReceiptData:
         """Parses receipt text or image using Gemini structured outputs."""
         use_vertex = os.environ.get("GOOGLE_GENAI_USE_VERTEXAI", "false").lower() == "true"
         project = os.environ.get("GOOGLE_CLOUD_PROJECT")
         location = os.environ.get("GOOGLE_CLOUD_LOCATION", "global")
-        
+
         if use_vertex:
             client = genai.Client(vertexai=True, project=project, location=location)
         else:
             client = genai.Client()
-            
+
         today_str = datetime.date.today().strftime("%Y-%m-%d")
-        
+
         content_input = []
         if image_parts:
             content_input.extend(image_parts)
-            
+
         # Check if the input is a JSON string containing image_url
         if isinstance(input_text, str) and input_text.strip().startswith("{"):
             try:
@@ -67,14 +67,14 @@ class GeminiReceiptParser:
                         content_input.append(types.Part.from_bytes(data=image_bytes, mime_type=content_type))
             except Exception as e:
                 logger.warning(f"Failed to resolve image_url in receipt parser: {e}")
-                
+
         # Append text part if it's not JSON
         if isinstance(input_text, str) and not input_text.strip().startswith("{"):
             content_input.append(input_text)
         else:
             if not content_input:
                 content_input.append("Analyze this receipt image and extract the details.")
-        
+
         response = client.models.generate_content(
             model=self.model_name,
             contents=content_input,
@@ -132,22 +132,22 @@ class SqlitePurchaseMemoryRepository:
             logger.error(f"Failed to save receipt to SQLite: {e}")
             return SavedReceiptResult(receipt_id=-1, success=False)
 
-    def find_duplicates(self, items: List[ReceiptItem], household_id: str, store: Optional[str] = None, date: Optional[str] = None) -> List[DuplicateAlert]:
+    def find_duplicates(self, items: list[ReceiptItem], household_id: str, store: str | None = None, date: str | None = None) -> list[DuplicateAlert]:
         """Checks for duplicate item purchases within SQLite (within 1 day)."""
         if not store or not date:
             # Fallback if store or date is not provided
             return []
-            
+
         items_tuples = [(item.name, item.price) for item in items]
         warnings = db.check_duplicate_items(store, date, items_tuples, household_id)
         return [DuplicateAlert(message=msg) for msg in warnings]
 
-    def query_purchase_history(self, query: str, household_id: str) -> List[PurchaseMatch]:
+    def query_purchase_history(self, query: str, household_id: str) -> list[PurchaseMatch]:
         """Queries historical purchases from SQLite database matching search term."""
         db_results = db.query_purchase_history(query, household_id)
         # db_results contains {"results": [...]}
         results = db_results.get("results", [])
-        
+
         matches = []
         for row in results:
             matches.append(
@@ -164,7 +164,7 @@ class SqlitePurchaseMemoryRepository:
 # --- SQLite Deals Client Implementation ---
 
 class SqliteDealsClient:
-    def lookup_price(self, product_name: str) -> List[DealAlert]:
+    def lookup_price(self, product_name: str) -> list[DealAlert]:
         """Looks up existing deals for a specific product name in SQLite."""
         with db.get_connection() as conn:
             cursor = conn.cursor()
@@ -185,7 +185,7 @@ class SqliteDealsClient:
                 )
             return results
 
-    def check_price_drop(self, product_name: str, paid_price: float) -> List[DealAlert]:
+    def check_price_drop(self, product_name: str, paid_price: float) -> list[DealAlert]:
         """Checks if a lower price deal exists compared to the paid price in SQLite."""
         with db.get_connection() as conn:
             cursor = conn.cursor()
@@ -247,7 +247,7 @@ def run_async(coro):
     except RuntimeError:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        
+
     if loop.is_running():
         import nest_asyncio
         nest_asyncio.apply()
@@ -256,11 +256,11 @@ def run_async(coro):
         return loop.run_until_complete(coro)
 
 class MCPDealsClient:
-    def __init__(self, fallback_client: DealsClient, command: str = "uv", args: List[str] = None):
+    def __init__(self, fallback_client: DealsClient, command: str = "uv", args: list[str] | None = None):
         self.fallback_client = fallback_client
         self.command = command
         self.last_run_mcp_success = True
-        
+
         server_path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
             "mcp_server",
@@ -278,10 +278,10 @@ class MCPDealsClient:
                     return ""
                 return "".join(part.text for part in response.content if hasattr(part, "text") and part.text)
 
-    def lookup_price(self, product_name: str) -> List[DealAlert]:
+    def lookup_price(self, product_name: str) -> list[DealAlert]:
         if not os.environ.get("USE_MCP_DEALS", "false").lower() == "true":
             return self.fallback_client.lookup_price(product_name)
-            
+
         try:
             self.last_run_mcp_success = True
             coro = self._call_mcp_tool("lookup_price", {"product_name": product_name})
@@ -304,10 +304,10 @@ class MCPDealsClient:
             logger.warning(f"MCP lookup_price failed, falling back: {e}")
             return self.fallback_client.lookup_price(product_name)
 
-    def check_price_drop(self, product_name: str, paid_price: float) -> List[DealAlert]:
+    def check_price_drop(self, product_name: str, paid_price: float) -> list[DealAlert]:
         if not os.environ.get("USE_MCP_DEALS", "false").lower() == "true":
             return self.fallback_client.check_price_drop(product_name, paid_price)
-            
+
         try:
             self.last_run_mcp_success = True
             coro = self._call_mcp_tool("check_price_drop", {"product_name": product_name, "paid_price": paid_price})
