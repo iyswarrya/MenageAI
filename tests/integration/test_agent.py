@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from dotenv import load_dotenv
+
 load_dotenv()
 
 from google.adk.agents.run_config import RunConfig, StreamingMode

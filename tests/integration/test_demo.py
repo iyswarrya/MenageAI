@@ -1,10 +1,10 @@
-import os
-import json
 import pytest
 from fastapi.testclient import TestClient
-from app.fast_api_app import app
+
 from app import db
+from app.fast_api_app import app
 from app.interfaces import registry
+
 
 # Clean DB setup for tests
 @pytest.fixture(autouse=True)
@@ -35,7 +35,7 @@ def test_health_and_ready_endpoints(clean_db):
 def test_agent_message_receipt_flow(clean_db, monkeypatch):
     """Verify posting a receipt message sanitizes, runs graph, saves items, and logs run."""
     monkeypatch.setenv("USE_MCP_DEALS", "true")
-    
+
     with TestClient(app) as client:
         payload = {
             "message": "Safeway receipt, July 2, 2026. Coffee $9.99. Total $9.99",
@@ -67,7 +67,7 @@ def test_agent_message_query_flow(clean_db):
     """Verify memory queries bypass receipt ingestion and search history."""
     # Pre-seed database with a purchase
     db.save_receipt_and_items("Trader Joe's", "2026-07-01", 5.99, [("Avocados", 5.99)], household_id="session_demo_2")
-    
+
     with TestClient(app) as client:
         payload = {
             "message": "When did we buy avocados?",

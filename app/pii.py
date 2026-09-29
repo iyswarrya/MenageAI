@@ -1,5 +1,6 @@
 import re
 
+
 def mask_pii(text: str) -> str:
     """
     Masks Personally Identifiable Information (PII) such as credit cards,
