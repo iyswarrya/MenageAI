@@ -24,6 +24,7 @@ from app.interfaces import (
 
 # --- Define Mock/Fake Classes to prove each interface can be implemented ---
 
+
 class MockReceiptParser:
     def parse(self, input_text: str) -> ReceiptData:
         return ReceiptData(
@@ -31,23 +32,39 @@ class MockReceiptParser:
             date="2026-07-01",
             items=[ReceiptItem(name="Mock Item", price=5.0)],
             prices=[5.0],
-            total=5.0
+            total=5.0,
         )
+
 
 class MockMemoryRepository:
     def __init__(self):
         self.saved = []
-    def save_receipt(self, receipt: ReceiptData, household_id: str = "default") -> SavedReceiptResult:
+
+    def save_receipt(
+        self, receipt: ReceiptData, household_id: str = "default"
+    ) -> SavedReceiptResult:
         self.saved.append(receipt)
         return SavedReceiptResult(receipt_id=100, success=True)
-    def find_duplicates(self, items: list[ReceiptItem], store: str, date: str, household_id: str) -> list[DuplicateAlert]:
+
+    def find_duplicates(
+        self, items: list[ReceiptItem], store: str, date: str, household_id: str
+    ) -> list[DuplicateAlert]:
         return [DuplicateAlert(message="Mock duplicate found")]
-    def query_purchase_history(self, query: str, household_id: str) -> list[PurchaseMatch]:
-        return [PurchaseMatch(store="Mock Store", date="2026-07-01", item_name=query, price=5.0)]
+
+    def query_purchase_history(
+        self, query: str, household_id: str
+    ) -> list[PurchaseMatch]:
+        return [
+            PurchaseMatch(
+                store="Mock Store", date="2026-07-01", item_name=query, price=5.0
+            )
+        ]
+
 
 class MockDealsClient:
     def lookup_price(self, product_name: str) -> list[DealAlert]:
         return []
+
     def check_price_drop(self, product_name: str, paid_price: float) -> list[DealAlert]:
         return [
             DealAlert(
@@ -55,28 +72,35 @@ class MockDealsClient:
                 current_price=paid_price,
                 deal_price=paid_price - 1.0,
                 store="Mock Deal Store",
-                details="Mock price drop details"
+                details="Mock price drop details",
             )
         ]
+
 
 class MockSecurityRedactor:
     def mask_pii(self, text: str) -> RedactionResult:
         return RedactionResult(sanitized_text="Redacted Text", redacted_items_count=1)
 
+
 class MockAgentRunLogger:
     def __init__(self):
         self.logs = []
+
     def log_input(self, step: str, input_data: Any) -> None:
         self.logs.append(f"input:{step}")
+
     def log_tool_call(self, step: str, tool_name: str, args: Any) -> None:
         self.logs.append(f"tool:{step}:{tool_name}")
+
     def log_output(self, step: str, output_data: Any) -> None:
         self.logs.append(f"output:{step}")
+
     def log_error(self, step: str, error_message: str) -> None:
         self.logs.append(f"error:{step}")
 
 
 # --- Unit Tests verifying each interface can be mocked ---
+
 
 def test_interfaces_conformance():
     """Verify that mock implementations conform to typing.Protocol interfaces."""
@@ -97,6 +121,7 @@ def test_interfaces_conformance():
 
 # --- Test showing DealsClient can be swapped with a fake in the workflow ---
 
+
 def test_deals_client_swappable():
     """Verify the workflow node uses the swapped DealsClient."""
     original_client = registry.deals_client
@@ -110,10 +135,10 @@ def test_deals_client_swappable():
                 date="2026-07-01",
                 items=[ReceiptItem(name="Apples", price=4.0)],
                 prices=[4.0],
-                total=4.0
+                total=4.0,
             ),
             is_duplicate_receipt=False,
-            duplicate_items=[]
+            duplicate_items=[],
         )
 
         # Execute the deals engine node directly
@@ -130,6 +155,7 @@ def test_deals_client_swappable():
 
 # --- Test showing PurchaseMemoryRepository can be swapped with a fake in the workflow ---
 
+
 def test_memory_repo_swappable():
     """Verify the workflow nodes use the swapped PurchaseMemoryRepository."""
     original_repo = registry.memory_repo
@@ -143,7 +169,7 @@ def test_memory_repo_swappable():
             date="2026-07-01",
             items=[ReceiptItem(name="Butteries", price=10.0)],
             prices=[10.0],
-            total=10.0
+            total=10.0,
         )
 
         output = memory_engine(input_receipt)

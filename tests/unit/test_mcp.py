@@ -29,8 +29,10 @@ def setup_test_db(monkeypatch, tmp_path):
     db.init_db()
     # Also patch mcp server DB_PATH
     import mcp_server.retail_server
+
     monkeypatch.setattr(mcp_server.retail_server, "DB_PATH", str(test_db_file))
     yield
+
 
 def test_mcp_server_tools_direct():
     """Test 1: Verify MCP server tools directly return mock deals and policies."""
@@ -51,11 +53,13 @@ def test_mcp_server_tools_direct():
     policy = get_store_return_policy("Costco Wholesale")
     assert "90 days" in policy
 
+
 def test_mcp_deals_client_conformance():
     """Test 2: Verify MCPDealsClient conforms to DealsClient protocol."""
     sqlite_deals = SqliteDealsClient()
     client = MCPDealsClient(fallback_client=sqlite_deals)
     assert isinstance(client, DealsClient)
+
 
 def test_deals_engine_works_with_mcp_client(monkeypatch):
     """Test 3: Verify deals_engine works end-to-end with MCPDealsClient."""
@@ -74,10 +78,10 @@ def test_deals_engine_works_with_mcp_client(monkeypatch):
                 date="2026-07-01",
                 items=[ReceiptItem(name="Organic Milk", price=3.99)],
                 prices=[3.99],
-                total=3.99
+                total=3.99,
             ),
             is_duplicate_receipt=False,
-            duplicate_items=[]
+            duplicate_items=[],
         )
 
         output = deals_engine(input_data)
@@ -89,13 +93,16 @@ def test_deals_engine_works_with_mcp_client(monkeypatch):
     finally:
         registry.deals_client = original_client
 
+
 def test_mcp_fallback_to_sqlite(monkeypatch):
     """Test 4: Verify if MCP server is unavailable, system falls back to SQLite."""
     monkeypatch.setenv("USE_MCP_DEALS", "true")
     sqlite_deals = SqliteDealsClient()
 
     # Configure MCPDealsClient to use a non-existent command to force failure
-    faulty_mcp = MCPDealsClient(fallback_client=sqlite_deals, command="invalid-mcp-command-xyz")
+    faulty_mcp = MCPDealsClient(
+        fallback_client=sqlite_deals, command="invalid-mcp-command-xyz"
+    )
 
     original_client = registry.deals_client
     registry.deals_client = faulty_mcp
@@ -109,6 +116,7 @@ def test_mcp_fallback_to_sqlite(monkeypatch):
     finally:
         registry.deals_client = original_client
 
+
 def test_pii_not_sent_to_mcp():
     """Test 5: Verify PII is masked in preprocessing and not sent to MCP client/tools."""
     raw_receipt_text = (
@@ -117,7 +125,9 @@ def test_pii_not_sent_to_mcp():
     )
 
     # Run the preprocessor
-    sanitized_text = preprocess_input(types.Content(parts=[types.Part(text=raw_receipt_text)]))
+    sanitized_text = preprocess_input(
+        types.Content(parts=[types.Part(text=raw_receipt_text)])
+    )
 
     # Verify sensitive data is redacted
     assert "4111" not in sanitized_text
