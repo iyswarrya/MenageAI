@@ -37,6 +37,7 @@ async def test_pii_masking_regex():
 
 
 @pytest.mark.asyncio
+@pytest.mark.integration
 async def test_new_receipt_ingestion_and_deals():
     """Test 1 & 4: New receipt ingestion and mock deal alert."""
     session_service = InMemorySessionService()
@@ -83,6 +84,7 @@ async def test_new_receipt_ingestion_and_deals():
         assert abs(row["total"] - 3.99) < 0.01
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_duplicate_receipt_detection():
     """Test 2: Duplicate receipt detection."""
@@ -118,6 +120,7 @@ async def test_duplicate_receipt_detection():
     assert "duplicate" in response_text.lower() or "⚠️" in response_text
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_memory_question_answering():
     """Test 3: Memory question answering."""
@@ -153,6 +156,7 @@ async def test_memory_question_answering():
     )
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_pii_masking_integration():
     """Test 5: PII masking integration in receipt processing."""
@@ -193,6 +197,7 @@ async def test_pii_masking_integration():
         assert "Safeway" in row["store"]
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_invalid_receipt_flow():
     """Test invalid receipt flow."""
