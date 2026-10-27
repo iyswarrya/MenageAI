@@ -8,9 +8,10 @@ DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "family_recei
 
 
 def get_connection():
-    """Returns a connection to the SQLite database."""
+    """Returns a connection to the SQLite database with foreign keys enforced."""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 
@@ -18,6 +19,67 @@ def init_db():
     """Initializes tables and seeds mock deals if not present."""
     with get_connection() as conn:
         cursor = conn.cursor()
+
+        # --- SEC-01 identity / household / session tables ---
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id TEXT PRIMARY KEY,
+                display_name TEXT,
+                whatsapp_e164 TEXT UNIQUE,
+                auth_subject TEXT UNIQUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_users_whatsapp ON users(whatsapp_e164)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_users_auth_subject ON users(auth_subject)"
+        )
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS households (
+                household_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL DEFAULT 'Family',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS household_members (
+                household_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'member',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (household_id, user_id),
+                FOREIGN KEY (household_id) REFERENCES households(household_id),
+                FOREIGN KEY (user_id) REFERENCES users(user_id)
+            )
+        """)
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_members_user ON household_members(user_id)"
+        )
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS conversation_sessions (
+                session_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                household_id TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(user_id),
+                FOREIGN KEY (household_id) REFERENCES households(household_id)
+            )
+        """)
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sessions_user "
+            "ON conversation_sessions(user_id)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sessions_household "
+            "ON conversation_sessions(household_id)"
+        )
 
         # Create receipts table
         cursor.execute("""
@@ -481,3 +543,167 @@ def get_all_purchases(household_id: str = "default") -> list[dict[str, Any]]:
                 }
             )
         return results
+
+
+# --- SEC-01 identity / membership / session helpers ---
+
+
+class SessionBindingConflictError(ValueError):
+    """Raised when a session_id is already bound to a different user or household."""
+
+
+def create_user(
+    user_id: str,
+    *,
+    display_name: str | None = None,
+    whatsapp_e164: str | None = None,
+    auth_subject: str | None = None,
+) -> str:
+    """Creates a user row. Returns user_id."""
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO users (user_id, display_name, whatsapp_e164, auth_subject)
+            VALUES (?, ?, ?, ?)
+            """,
+            (user_id, display_name, whatsapp_e164, auth_subject),
+        )
+        conn.commit()
+    return user_id
+
+
+def create_household(household_id: str, *, name: str = "Family") -> str:
+    """Creates a household row. Returns household_id."""
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT INTO households (household_id, name) VALUES (?, ?)",
+            (household_id, name),
+        )
+        conn.commit()
+    return household_id
+
+
+def add_household_member(
+    household_id: str, user_id: str, *, role: str = "member"
+) -> None:
+    """Adds a user to a household. Requires both entities to exist (FK enforced)."""
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO household_members (household_id, user_id, role)
+            VALUES (?, ?, ?)
+            """,
+            (household_id, user_id, role),
+        )
+        conn.commit()
+
+
+def user_belongs_to_household(user_id: str, household_id: str) -> bool:
+    """Returns True if user_id is a member of household_id."""
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT 1 FROM household_members
+            WHERE user_id = ? AND household_id = ?
+            LIMIT 1
+            """,
+            (user_id, household_id),
+        ).fetchone()
+        return row is not None
+
+
+def list_user_households(user_id: str) -> list[str]:
+    """Returns household_ids the user belongs to, ordered by join time."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT household_id FROM household_members
+            WHERE user_id = ?
+            ORDER BY created_at ASC
+            """,
+            (user_id,),
+        ).fetchall()
+        return [r["household_id"] for r in rows]
+
+
+def get_user_by_whatsapp(whatsapp_e164: str) -> dict[str, Any] | None:
+    """Looks up a user by WhatsApp address (e.g. whatsapp:+15551234567)."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM users WHERE whatsapp_e164 = ?",
+            (whatsapp_e164,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def get_user_by_auth_subject(auth_subject: str) -> dict[str, Any] | None:
+    """Looks up a user by OIDC/Firebase auth subject."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM users WHERE auth_subject = ?",
+            (auth_subject,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def get_conversation_session(session_id: str) -> dict[str, Any] | None:
+    """Returns the ownership binding for a conversation session, if any."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM conversation_sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def create_conversation_session(
+    session_id: str,
+    user_id: str,
+    household_id: str,
+    *,
+    channel: str,
+) -> dict[str, Any]:
+    """
+    Binds a session_id to exactly one (user_id, household_id).
+
+    Re-binding the same triple is idempotent (updates last_seen_at).
+    Reusing a session_id for a different user or household raises
+    SessionBindingConflictError.
+    """
+    existing = get_conversation_session(session_id)
+    if existing:
+        if existing["user_id"] != user_id or existing["household_id"] != household_id:
+            raise SessionBindingConflictError(
+                "session_id is already bound to a different user or household"
+            )
+        with get_connection() as conn:
+            conn.execute(
+                """
+                UPDATE conversation_sessions
+                SET last_seen_at = CURRENT_TIMESTAMP
+                WHERE session_id = ?
+                """,
+                (session_id,),
+            )
+            conn.commit()
+        return get_conversation_session(session_id)  # type: ignore[return-value]
+
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO conversation_sessions
+                (session_id, user_id, household_id, channel)
+            VALUES (?, ?, ?, ?)
+            """,
+            (session_id, user_id, household_id, channel),
+        )
+        conn.commit()
+    binding = get_conversation_session(session_id)
+    assert binding is not None
+    return binding
+
+
+def session_owned_by_user(session_id: str, user_id: str) -> bool:
+    """Returns True if session_id exists and is owned by user_id."""
+    binding = get_conversation_session(session_id)
+    return binding is not None and binding["user_id"] == user_id

@@ -21,6 +21,11 @@ def test_init_db():
         assert "receipts" in tables
         assert "items" in tables
         assert "mock_deals" in tables
+        assert "users" in tables
+        assert "households" in tables
+        assert "household_members" in tables
+        assert "conversation_sessions" in tables
+        assert cursor.execute("PRAGMA foreign_keys").fetchone()[0] == 1
 
         cursor.execute("SELECT COUNT(*) FROM mock_deals")
         assert cursor.fetchone()[0] > 0
