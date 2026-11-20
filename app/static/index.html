@@ -574,15 +574,18 @@
 </div>
 
 <script>
-    // Generate unique session and user IDs per tab to isolate agent memory context
-    if (!sessionStorage.getItem("user_id")) {
-        sessionStorage.setItem("user_id", "web_user_" + Math.random().toString(36).substring(2, 11));
+    // Local-dev demo identity (requires APP_ENV + ALLOW_INSECURE_IDENTITY).
+    // Production web clients should send Firebase Bearer tokens instead.
+    const DEV_USER_HEADER = "X-Menage-Dev-User";
+    const userId = "demo_user";
+    const householdId = "demo_household";
+    let sessionId = sessionStorage.getItem("session_id") || null;
+
+    function authHeaders(extra) {
+        const headers = Object.assign({}, extra || {});
+        headers[DEV_USER_HEADER] = userId;
+        return headers;
     }
-    if (!sessionStorage.getItem("session_id")) {
-        sessionStorage.setItem("session_id", "web_session_" + Math.random().toString(36).substring(2, 11));
-    }
-    const userId = sessionStorage.getItem("user_id");
-    const sessionId = sessionStorage.getItem("session_id");
 
     // Keep sidebar closed on smaller mobile viewports by default
     if (window.innerWidth < 800) {
@@ -645,7 +648,9 @@
     }
 
     function refreshHistory() {
-        fetch("/purchases?session_id=" + encodeURIComponent(sessionId))
+        fetch("/purchases?household_id=" + encodeURIComponent(householdId), {
+            headers: authHeaders()
+        })
             .then(res => res.json())
             .then(data => {
                 const tbody = document.getElementById("purchasesTableBody");
@@ -669,7 +674,9 @@
     }
 
     function refreshLogs() {
-        fetch("/agent/runs?session_id=" + encodeURIComponent(sessionId))
+        fetch("/agent/runs?household_id=" + encodeURIComponent(householdId), {
+            headers: authHeaders()
+        })
             .then(res => res.json())
             .then(data => {
                 const tbody = document.getElementById("logsTableBody");
@@ -726,24 +733,31 @@
             // Build multipart request payload
             const formData = new FormData();
             formData.append("file", file);
-            formData.append("user_id", userId);
-            formData.append("session_id", sessionId);
+            formData.append("household_id", householdId);
+            if (sessionId) {
+                formData.append("session_id", sessionId);
+            }
 
             uploadPromise = fetch("/agent/upload", {
                 method: "POST",
+                headers: authHeaders(),
                 body: formData
             });
         } else {
             appendMessageBubble("user", text);
-            
+
+            const body = {
+                message: text,
+                household_id: householdId
+            };
+            if (sessionId) {
+                body.session_id = sessionId;
+            }
+
             uploadPromise = fetch("/agent/message", {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ 
-                    message: text,
-                    user_id: userId,
-                    session_id: sessionId
-                })
+                headers: authHeaders({ "Content-Type": "application/json" }),
+                body: JSON.stringify(body)
             });
         }
 
@@ -751,6 +765,10 @@
         uploadPromise
             .then(res => res.json())
             .then(data => {
+                if (data.session_id) {
+                    sessionId = data.session_id;
+                    sessionStorage.setItem("session_id", sessionId);
+                }
                 appendMessageBubble("agent", data.response);
                 textInput.value = "";
                 clearFileSelection();

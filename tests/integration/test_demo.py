@@ -2,8 +2,17 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import db
+from app.auth import AuthenticatedUser, set_identity_provider_override
 from app.fast_api_app import app
 from app.interfaces import registry
+
+
+class StubProvider:
+    def __init__(self, user_id: str):
+        self.user_id = user_id
+
+    def authenticate(self, *, headers):
+        return AuthenticatedUser(user_id=self.user_id, auth_method="test")
 
 
 # Clean DB setup for tests
@@ -17,7 +26,13 @@ def clean_db(monkeypatch, tmp_path):
     import mcp_server.retail_server
 
     monkeypatch.setattr(mcp_server.retail_server, "DB_PATH", str(test_db_file))
+
+    db.create_user("test_user_demo")
+    db.create_household("hh_demo")
+    db.add_household_member("hh_demo", "test_user_demo")
+    set_identity_provider_override(StubProvider("test_user_demo"))
     yield
+    set_identity_provider_override(None)
 
 
 def test_health_and_ready_endpoints(clean_db):
@@ -42,29 +57,30 @@ def test_agent_message_receipt_flow(clean_db, monkeypatch):
     with TestClient(app) as client:
         payload = {
             "message": "Safeway receipt, July 2, 2026. Coffee $9.99. Total $9.99",
-            "user_id": "test_user_demo",
-            "session_id": "session_demo_1",
+            "household_id": "hh_demo",
         }
         response = client.post("/agent/message", json=payload)
         assert response.status_code == 200
         data = response.json()
         assert "response" in data
-        assert data["session_id"] == "session_demo_1"
+        assert data["session_id"]
+        assert data["household_id"] == "hh_demo"
 
         # Verify receipt was saved to database
-        purchases = client.get("/purchases?session_id=session_demo_1").json()
+        purchases = client.get("/purchases", params={"household_id": "hh_demo"}).json()
         assert len(purchases) >= 1
         assert purchases[0]["store"] == "Safeway"
         assert purchases[0]["item_name"] == "Coffee"
         assert purchases[0]["price"] == 9.99
 
         # Verify agent run was logged to agent_runs
-        runs = client.get("/agent/runs?session_id=session_demo_1").json()
+        runs = client.get("/agent/runs", params={"household_id": "hh_demo"}).json()
         assert len(runs) >= 1
         assert runs[0]["intent"] == "receipt"
         assert runs[0]["route_taken"] == "receipt"
         assert runs[0]["pii_redacted_count"] == 0
         assert runs[0]["mcp_success"] is True
+        assert runs[0]["household_id"] == "hh_demo"
 
 
 def test_agent_message_query_flow(clean_db):
@@ -75,14 +91,13 @@ def test_agent_message_query_flow(clean_db):
         "2026-07-01",
         5.99,
         [("Avocados", 5.99)],
-        household_id="session_demo_2",
+        household_id="hh_demo",
     )
 
     with TestClient(app) as client:
         payload = {
             "message": "When did we buy avocados?",
-            "user_id": "test_user_demo",
-            "session_id": "session_demo_2",
+            "household_id": "hh_demo",
         }
         response = client.post("/agent/message", json=payload)
         assert response.status_code == 200
@@ -90,7 +105,7 @@ def test_agent_message_query_flow(clean_db):
         assert "Trader" in response_text or "trader" in response_text.lower()
 
         # Verify run was logged and tools_called includes query_purchase_history
-        runs = client.get("/agent/runs?session_id=session_demo_2").json()
+        runs = client.get("/agent/runs", params={"household_id": "hh_demo"}).json()
         assert len(runs) >= 1
         assert runs[0]["intent"] == "query"
         assert runs[0]["route_taken"] == "query"
@@ -113,14 +128,13 @@ def test_mcp_fallback_behavior_in_api(clean_db, monkeypatch):
         try:
             payload = {
                 "message": "Whole Foods receipt, July 2, 2026. Apples $3.99. Total $3.99",
-                "user_id": "test_user_demo",
-                "session_id": "session_demo_3",
+                "household_id": "hh_demo",
             }
             response = client.post("/agent/message", json=payload)
             assert response.status_code == 200
 
             # Verify the run was logged successfully and mcp_success is False (fallback occurred)
-            runs = client.get("/agent/runs?session_id=session_demo_3").json()
+            runs = client.get("/agent/runs", params={"household_id": "hh_demo"}).json()
             assert len(runs) >= 1
             assert runs[0]["mcp_success"] is False
         finally:

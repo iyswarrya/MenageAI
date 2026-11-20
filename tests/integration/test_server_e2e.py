@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import json
 import logging
 import os
 import subprocess
@@ -31,7 +30,6 @@ from a2a.types import (
     Part,
     Role,
     SendStreamingMessageRequest,
-    SendStreamingMessageResponse,
     TextPart,
 )
 from requests.exceptions import RequestException
@@ -125,8 +123,8 @@ def server_fixture(request: Any) -> Iterator[subprocess.Popen[str]]:
 
 
 def test_adk_run_sse(server_fixture: subprocess.Popen[str]) -> None:
-    """Test the native ADK route (/run_sse) end to end."""
-    logger.info("Starting ADK /run_sse test")
+    """SEC-01: built-in ADK /run_sse and /apps session routes are disabled."""
+    logger.info("Starting ADK /run_sse absence test")
     user_id = f"user_{uuid.uuid4()}"
     session_data = {"state": {"preferred_language": "English", "visit_count": 1}}
 
@@ -136,41 +134,24 @@ def test_adk_run_sse(server_fixture: subprocess.Popen[str]) -> None:
         json=session_data,
         timeout=60,
     )
-    assert session_response.status_code == 200
-    session_id = session_response.json()["id"]
+    assert session_response.status_code == 404
 
     data = {
         "app_name": "app",
         "user_id": user_id,
-        "session_id": session_id,
+        "session_id": "unused",
         "new_message": {"role": "user", "parts": [{"text": "Hi!"}]},
         "streaming": True,
     }
     response = requests.post(
         RUN_SSE_URL, headers=HEADERS, json=data, stream=True, timeout=60
     )
-    assert response.status_code == 200
-
-    events = []
-    for line in response.iter_lines():
-        if line:
-            line_str = line.decode("utf-8")
-            if line_str.startswith("data: "):
-                events.append(json.loads(line_str[6:]))
-
-    assert events, "No events received from stream"
-    has_text_content = any(
-        (content := event.get("content"))
-        and content.get("parts")
-        and any(part.get("text") for part in content["parts"])
-        for event in events
-    )
-    assert has_text_content, "Expected at least one event with text content"
+    assert response.status_code == 404
 
 
 def test_a2a_chat_stream(server_fixture: subprocess.Popen[str]) -> None:
-    """Test the A2A route using the JSON-RPC streaming protocol."""
-    logger.info("Starting A2A chat stream test")
+    """SEC-01: A2A HTTP routes are disabled by default."""
+    logger.info("Starting A2A absence test")
 
     message = Message(
         message_id=f"msg-user-{uuid.uuid4()}",
@@ -188,40 +169,13 @@ def test_a2a_chat_stream(server_fixture: subprocess.Popen[str]) -> None:
         stream=True,
         timeout=60,
     )
-    assert response.status_code == 200
-
-    responses: list[SendStreamingMessageResponse] = []
-    for line in response.iter_lines():
-        if line:
-            line_str = line.decode("utf-8")
-            if line_str.startswith("data: "):
-                responses.append(
-                    SendStreamingMessageResponse.model_validate(
-                        json.loads(line_str[6:])
-                    )
-                )
-
-    assert responses, "No responses received from stream"
-
-    final_responses = [
-        r.root
-        for r in responses
-        if hasattr(r.root, "result")
-        and hasattr(r.root.result, "final")
-        and r.root.result.final is True
-    ]
-    assert final_responses, "No final response received"
-    assert final_responses[-1].result.status.state == "completed"
+    assert response.status_code == 404
 
 
 def test_agent_card(server_fixture: subprocess.Popen[str]) -> None:
-    """Test that the A2A agent card is served at the well-known URI."""
+    """SEC-01: A2A agent card is not exposed when A2A routes are disabled."""
     response = requests.get(AGENT_CARD_URL, timeout=10)
-    assert response.status_code == 200, f"A2A endpoint returned {response.status_code}"
-
-    served_agent_card = response.json()
-    for field in ("name", "description", "skills", "capabilities", "url", "version"):
-        assert field in served_agent_card, f"Missing field in agent card: {field}"
+    assert response.status_code == 404
 
 
 def test_collect_feedback(server_fixture: subprocess.Popen[str]) -> None:

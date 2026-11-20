@@ -26,6 +26,7 @@ from google.adk.plugins import BasePlugin
 from google.genai import types
 
 from app import db
+from app.auth.authorization import AUTHORIZED_HOUSEHOLD_STATE_KEY
 from app.interfaces import registry, ReceiptItem, ReceiptData
 from app.services import (
     GeminiReceiptParser,
@@ -58,9 +59,20 @@ class AgentRunLoggerPlugin(BasePlugin):
         self, *, invocation_context
     ) -> Optional[types.Content]:
         session_state = invocation_context.session.state
+        # Trusted household must be set by authenticated entrypoints.
+        # Never use session.id as household tenancy.
+        authorized_household = session_state.get(AUTHORIZED_HOUSEHOLD_STATE_KEY)
+        if not authorized_household:
+            authorized_household = "unauthorized"
+            session_state.setdefault(
+                "current_run_errors",
+                "missing authorized_household_id in session state",
+            )
+        # Re-assert trusted value so tool/LLM state tampering cannot replace it.
+        session_state[AUTHORIZED_HOUSEHOLD_STATE_KEY] = authorized_household
         session_state["current_run"] = {
             "request_id": invocation_context.invocation_id or "local",
-            "household_id": invocation_context.session.id or "default",
+            "household_id": authorized_household,
             "user_id": invocation_context.user_id or "default_user",
             "intent": "unknown",
             "route_taken": "unknown",
@@ -208,13 +220,24 @@ def receipt_agent(node_input: str, ctx=None) -> ReceiptData:
     return receipt_data
 
 
+def _trusted_household_id(ctx=None) -> str:
+    """Resolve household only from the server-authorized session state key."""
+    if ctx and hasattr(ctx, "state"):
+        trusted = ctx.state.get(AUTHORIZED_HOUSEHOLD_STATE_KEY)
+        if trusted:
+            if "current_run" in ctx.state:
+                ctx.state["current_run"]["household_id"] = trusted
+            return trusted
+        if "current_run" in ctx.state:
+            return ctx.state["current_run"].get("household_id", "unauthorized")
+    return "unauthorized"
+
+
 def memory_engine(node_input: ReceiptData, ctx=None) -> MemoryAgentOutput:
     """Stores the receipt and items in SQLite and checks for duplicate purchases."""
     registry.logger.log_input("memory_engine", node_input)
 
-    household_id = "default"
-    if ctx and hasattr(ctx, "state") and "current_run" in ctx.state:
-        household_id = ctx.state["current_run"].get("household_id", "default")
+    household_id = _trusted_household_id(ctx)
 
     items = [ReceiptItem(name=item.name, price=item.price) for item in node_input.items]
     is_duplicate_receipt = db.check_duplicate_receipt(
@@ -601,13 +624,7 @@ def query_purchase_history(search_term: str, tool_context=None) -> Dict[str, Any
         "query_agent", "query_purchase_history", {"search_term": search_term}
     )
 
-    household_id = "default"
-    if (
-        tool_context
-        and hasattr(tool_context, "state")
-        and "current_run" in tool_context.state
-    ):
-        household_id = tool_context.state["current_run"].get("household_id", "default")
+    household_id = _trusted_household_id(tool_context)
 
     results = registry.memory_repo.query_purchase_history(
         search_term, household_id=household_id

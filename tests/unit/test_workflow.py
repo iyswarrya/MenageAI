@@ -9,6 +9,9 @@ from google.genai import types
 
 from app import db, pii
 from app.agent import root_agent
+from app.auth import AUTHORIZED_HOUSEHOLD_STATE_KEY
+
+_TRUSTED_STATE = {AUTHORIZED_HOUSEHOLD_STATE_KEY: "default"}
 
 
 # Setup a clean test database for each test run
@@ -41,7 +44,9 @@ async def test_pii_masking_regex():
 async def test_new_receipt_ingestion_and_deals():
     """Test 1 & 4: New receipt ingestion and mock deal alert."""
     session_service = InMemorySessionService()
-    session = await session_service.create_session(user_id="test_user", app_name="app")
+    session = await session_service.create_session(
+        user_id="test_user", app_name="app", state=_TRUSTED_STATE
+    )
     runner = Runner(agent=root_agent, session_service=session_service, app_name="app")
 
     # Send receipt with higher price than the mock deal (Apple deal price is 1.49)
@@ -94,7 +99,9 @@ async def test_duplicate_receipt_detection():
     )
 
     session_service = InMemorySessionService()
-    session = await session_service.create_session(user_id="test_user", app_name="app")
+    session = await session_service.create_session(
+        user_id="test_user", app_name="app", state=_TRUSTED_STATE
+    )
     runner = Runner(agent=root_agent, session_service=session_service, app_name="app")
 
     # Send duplicate receipt
@@ -130,7 +137,9 @@ async def test_memory_question_answering():
     )
 
     session_service = InMemorySessionService()
-    session = await session_service.create_session(user_id="test_user", app_name="app")
+    session = await session_service.create_session(
+        user_id="test_user", app_name="app", state=_TRUSTED_STATE
+    )
     runner = Runner(agent=root_agent, session_service=session_service, app_name="app")
 
     # Ask memory question
@@ -161,7 +170,9 @@ async def test_memory_question_answering():
 async def test_pii_masking_integration():
     """Test 5: PII masking integration in receipt processing."""
     session_service = InMemorySessionService()
-    session = await session_service.create_session(user_id="test_user", app_name="app")
+    session = await session_service.create_session(
+        user_id="test_user", app_name="app", state=_TRUSTED_STATE
+    )
     runner = Runner(agent=root_agent, session_service=session_service, app_name="app")
 
     # Send receipt containing sensitive card, phone, and email information
@@ -202,7 +213,9 @@ async def test_pii_masking_integration():
 async def test_invalid_receipt_flow():
     """Test invalid receipt flow."""
     session_service = InMemorySessionService()
-    session = await session_service.create_session(user_id="test_user", app_name="app")
+    session = await session_service.create_session(
+        user_id="test_user", app_name="app", state=_TRUSTED_STATE
+    )
     runner = Runner(agent=root_agent, session_service=session_service, app_name="app")
 
     message = types.Content(

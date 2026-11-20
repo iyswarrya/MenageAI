@@ -15,23 +15,40 @@
 import contextlib
 import logging
 import os
+import uuid
 from collections.abc import AsyncIterator
 
 import google.auth
-from a2a.server.tasks import InMemoryTaskStore
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, File, Form, Response, UploadFile
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    Response,
+    UploadFile,
+)
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from google.adk.cli.fast_api import get_fast_api_app
 from google.adk.runners import Runner
 from google.genai import types
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.app_utils import services
-from app.app_utils.a2a import attach_a2a_routes
 from app.app_utils.telemetry import setup_telemetry
 from app.app_utils.typing import Feedback
+from app.auth import (
+    AUTHORIZED_HOUSEHOLD_STATE_KEY,
+    AuthenticatedUser,
+    AuthorizationError,
+    get_current_user,
+    raise_authorization_http,
+    require_session_for_household,
+    resolve_authorized_household,
+    seed_local_demo_identity,
+)
 
 load_dotenv()
 setup_telemetry()
@@ -59,40 +76,34 @@ AGENT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     from app.agent import app as adk_app
-    from app.agent import root_agent
 
+    # Internal ADK Runner only — do not mount ADK/A2A HTTP routes.
     runner = Runner(
         app=adk_app,
         session_service=services.get_session_service(),
         artifact_service=services.get_artifact_service(),
-        auto_create_session=True,
+        auto_create_session=False,
     )
     app.state.runner = runner
     app.state.agent_app_name = adk_app.name
-    await attach_a2a_routes(
-        app,
-        agent=root_agent,
-        runner=runner,
-        task_store=InMemoryTaskStore(),
-        rpc_path=f"/a2a/{adk_app.name}",
-    )
+    seed_local_demo_identity()
     yield
 
 
-app: FastAPI = get_fast_api_app(
-    agents_dir=AGENT_DIR,
-    web=True,
-    artifact_service_uri=services.ARTIFACT_SERVICE_URI,
-    allow_origins=allow_origins,
-    session_service_uri=services.SESSION_SERVICE_URI,
-    otel_to_cloud=False,
+app: FastAPI = FastAPI(
+    title="family-receipt-agent",
+    description="API for interacting with the Agent family-receipt-agent",
     lifespan=lifespan,
 )
-app.title = "family-receipt-agent"
-app.description = "API for interacting with the Agent family-receipt-agent"
 
-# Remove default health route to allow custom health route to take precedence
-app.routes[:] = [r for r in app.routes if getattr(r, "path", None) != "/health"]
+if allow_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=allow_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 
 # --- Schemas ---
@@ -100,87 +111,153 @@ app.routes[:] = [r for r in app.routes if getattr(r, "path", None) != "/health"]
 
 class MessageRequest(BaseModel):
     message: str
-    user_id: str = "default_user"
-    session_id: str = "default_session"
+    household_id: str | None = None
+    session_id: str | None = None
+    # Ignored for identity — retained only so forged clients cannot confuse callers.
+    user_id: str | None = Field(
+        default=None,
+        description="Ignored. Authenticated identity comes from credentials.",
+    )
+
+
+# --- Session helpers ---
+
+
+async def _resolve_agent_session(
+    *,
+    user: AuthenticatedUser,
+    household_id: str,
+    session_id: str | None,
+    channel: str = "web",
+):
+    """Resume an owned session or create a new server-owned session."""
+    runner = app.state.runner
+    agent_app_name = app.state.agent_app_name
+    trusted_state = {AUTHORIZED_HOUSEHOLD_STATE_KEY: household_id}
+
+    if session_id and session_id.strip():
+        try:
+            require_session_for_household(user, session_id.strip(), household_id)
+        except AuthorizationError as exc:
+            raise_authorization_http(exc)
+
+        session = await runner.session_service.get_session(
+            app_name=agent_app_name,
+            session_id=session_id.strip(),
+            user_id=user.user_id,
+        )
+        if session is None:
+            # DB binding exists but ADK session is gone — do not transfer ownership.
+            raise_authorization_http(
+                AuthorizationError("Conversation session is unavailable")
+            )
+        session.state[AUTHORIZED_HOUSEHOLD_STATE_KEY] = household_id
+        return session
+
+    new_session_id = str(uuid.uuid4())
+    session = await runner.session_service.create_session(
+        user_id=user.user_id,
+        app_name=agent_app_name,
+        session_id=new_session_id,
+        state=trusted_state,
+    )
+    from app import db
+
+    db.create_conversation_session(
+        session.id,
+        user.user_id,
+        household_id,
+        channel=channel,
+    )
+    return session
+
+
+async def _collect_agent_response(
+    content: types.Content, user_id: str, session_id: str
+):
+    runner = app.state.runner
+    response_text = ""
+    async for event in runner.run_async(
+        new_message=content, user_id=user_id, session_id=session_id
+    ):
+        node_name = event.node_info.name if event.node_info else ""
+        if node_name in ("response_agent", "query_agent"):
+            if event.content and event.content.parts:
+                for part in event.content.parts:
+                    if part.text:
+                        response_text += part.text
+        elif node_name == "invalid_receipt_responder":
+            if event.output:
+                response_text += str(event.output)
+    return response_text
+
+
+def _authorized_household(
+    user: AuthenticatedUser, requested_household_id: str | None
+) -> str:
+    try:
+        return resolve_authorized_household(user, requested_household_id)
+    except AuthorizationError as exc:
+        raise_authorization_http(exc)
+        raise  # pragma: no cover
 
 
 # --- Custom Routes ---
 
 
 @app.post("/agent/message")
-async def agent_message(req: MessageRequest):
+async def agent_message(
+    req: MessageRequest,
+    user: AuthenticatedUser = Depends(get_current_user),
+):
     """Executes the agent workflow with user input."""
-    runner = app.state.runner
-    content = types.Content(role="user", parts=[types.Part.from_text(text=req.message)])
-
-    # Ensure session exists or create a new one
-    session = await runner.session_service.get_session(
-        app_name=app.state.agent_app_name,
+    household_id = _authorized_household(user, req.household_id)
+    session = await _resolve_agent_session(
+        user=user,
+        household_id=household_id,
         session_id=req.session_id,
-        user_id=req.user_id,
+        channel="web",
     )
-    if not session:
-        session = await runner.session_service.create_session(
-            user_id=req.user_id,
-            app_name=app.state.agent_app_name,
-            session_id=req.session_id,
-        )
-
-    response_text = ""
-    async for event in runner.run_async(
-        new_message=content, user_id=req.user_id, session_id=session.id
-    ):
-        node_name = event.node_info.name if event.node_info else ""
-        if node_name in ("response_agent", "query_agent"):
-            if event.content and event.content.parts:
-                for part in event.content.parts:
-                    if part.text:
-                        response_text += part.text
-        elif node_name == "invalid_receipt_responder":
-            if event.output:
-                response_text += str(event.output)
-    return {"response": response_text, "session_id": session.id}
+    content = types.Content(role="user", parts=[types.Part.from_text(text=req.message)])
+    response_text = await _collect_agent_response(content, user.user_id, session.id)
+    return {
+        "response": response_text,
+        "session_id": session.id,
+        "household_id": household_id,
+    }
 
 
 @app.post("/agent/upload")
 async def agent_upload(
     file: UploadFile = File(...),
-    user_id: str = Form("default_user"),
-    session_id: str = Form("default_session"),
+    household_id: str | None = Form(None),
+    session_id: str | None = Form(None),
+    user_id: str | None = Form(None),  # ignored — auth via credentials
+    user: AuthenticatedUser = Depends(get_current_user),
 ):
     """Executes the agent workflow with an uploaded receipt file."""
-    runner = app.state.runner
+    _ = user_id  # intentionally ignored
+    resolved_household = _authorized_household(user, household_id)
+    session = await _resolve_agent_session(
+        user=user,
+        household_id=resolved_household,
+        session_id=session_id,
+        channel="web",
+    )
+
     file_bytes = await file.read()
     content_type = file.content_type or "image/jpeg"
-
     parts = [
         types.Part.from_bytes(data=file_bytes, mime_type=content_type),
         types.Part.from_text(text="Analyze this receipt image."),
     ]
     content = types.Content(role="user", parts=parts)
-
-    session = await runner.session_service.get_session(
-        app_name=app.state.agent_app_name, session_id=session_id, user_id=user_id
-    )
-    if not session:
-        session = await runner.session_service.create_session(
-            user_id=user_id, app_name=app.state.agent_app_name, session_id=session_id
-        )
-
-    response_text = ""
-    async for event in runner.run_async(
-        new_message=content, user_id=user_id, session_id=session.id
-    ):
-        node_name = event.node_info.name if event.node_info else ""
-        if node_name in ("response_agent", "query_agent"):
-            if event.content and event.content.parts:
-                for part in event.content.parts:
-                    if part.text:
-                        response_text += part.text
-        elif node_name == "invalid_receipt_responder":
-            if event.output:
-                response_text += str(event.output)
-    return {"response": response_text, "session_id": session.id}
+    response_text = await _collect_agent_response(content, user.user_id, session.id)
+    return {
+        "response": response_text,
+        "session_id": session.id,
+        "household_id": resolved_household,
+    }
 
 
 def twilio_send_message(
@@ -209,15 +286,21 @@ def twilio_send_message(
 async def process_webhook_async(
     From: str, To: str, Body: str | None, MediaUrl0: str | None
 ):
-    """Background task to run the ADK agent workflow and send the responses back via Twilio REST API."""
+    """Background task to run the ADK agent workflow and send the responses back via Twilio REST API.
+
+    Residual risk (SEC-01 Phase B / SEC-02): Twilio household tenancy still uses the
+    legacy shared session id until Phase C. Webhook signature verification is SEC-02.
+    """
     import requests
 
     sys_logger = logging.getLogger("twilio_integration")
     runner = app.state.runner
     agent_app_name = app.state.agent_app_name
 
+    # Legacy shared tenancy until Phase C Twilio membership migration.
     session_id = "twilio_session_family"
     user_id = f"twilio_user_{From.replace('whatsapp:', '')}"
+    legacy_household_id = session_id
 
     try:
         session = await runner.session_service.get_session(
@@ -225,8 +308,13 @@ async def process_webhook_async(
         )
         if not session:
             session = await runner.session_service.create_session(
-                user_id=user_id, app_name=agent_app_name, session_id=session_id
+                user_id=user_id,
+                app_name=agent_app_name,
+                session_id=session_id,
+                state={AUTHORIZED_HOUSEHOLD_STATE_KEY: legacy_household_id},
             )
+        else:
+            session.state[AUTHORIZED_HOUSEHOLD_STATE_KEY] = legacy_household_id
 
         parts = []
         text_message = Body.strip() if Body else ""
@@ -348,6 +436,8 @@ async def twilio_webhook(
     """Receives WhatsApp incoming messages directly from Twilio,
     spawns a background task to process it asynchronously,
     and returns an empty TwiML response immediately to prevent timeout.
+
+    Not Firebase-authenticated. Signature verification is tracked under SEC-02.
     """
     sys_logger = logging.getLogger("twilio_integration")
     sys_logger.info(
@@ -363,19 +453,28 @@ async def twilio_webhook(
 
 
 @app.get("/purchases")
-def get_purchases(session_id: str = "default"):
-    """Returns all past purchases from the SQLite database."""
+def get_purchases(
+    household_id: str | None = None,
+    user: AuthenticatedUser = Depends(get_current_user),
+):
+    """Returns past purchases for an authorized household."""
     from app import db
 
-    return db.get_all_purchases(household_id=session_id)
+    resolved = _authorized_household(user, household_id)
+    return db.get_all_purchases(household_id=resolved)
 
 
 @app.get("/agent/runs")
-def get_runs(limit: int = 20, session_id: str = "default"):
-    """Returns logged agent execution history runs."""
+def get_runs(
+    limit: int = 20,
+    household_id: str | None = None,
+    user: AuthenticatedUser = Depends(get_current_user),
+):
+    """Returns logged agent execution history for an authorized household."""
     from app import db
 
-    return db.get_agent_runs(limit=limit, household_id=session_id)
+    resolved = _authorized_household(user, household_id)
+    return db.get_agent_runs(limit=limit, household_id=resolved)
 
 
 @app.get("/health")
@@ -427,20 +526,18 @@ def collect_feedback(feedback: Feedback) -> dict[str, str]:
     return {"status": "success"}
 
 
-# --- Serve Demo Web UI (Commented Out) ---
+# --- Serve Demo Web UI ---
 
 static_dir = os.path.join(AGENT_DIR, "app", "static")
 os.makedirs(static_dir, exist_ok=True)
 
 
-# Mount index.html at root "/" and "/chat"
 @app.get("/")
 @app.get("/chat")
 def read_root():
     return FileResponse(os.path.join(static_dir, "index.html"))
 
 
-# Mount all other static files
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 

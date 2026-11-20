@@ -646,6 +646,16 @@ def get_user_by_auth_subject(auth_subject: str) -> dict[str, Any] | None:
         return dict(row) if row else None
 
 
+def get_user(user_id: str) -> dict[str, Any] | None:
+    """Looks up a user by internal user_id."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM users WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
 def get_conversation_session(session_id: str) -> dict[str, Any] | None:
     """Returns the ownership binding for a conversation session, if any."""
     with get_connection() as conn:

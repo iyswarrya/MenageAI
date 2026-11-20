@@ -12,12 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Authentication and household authorization primitives (SEC-01 Phase A)."""
+"""Authentication and household authorization primitives (SEC-01)."""
 
 from app.auth.authorization import (
+    AUTHORIZED_HOUSEHOLD_STATE_KEY,
     AuthorizationError,
     require_household_access,
+    require_session_for_household,
     require_session_owner,
+    resolve_authorized_household,
+)
+from app.auth.demo_seed import (
+    DEMO_HOUSEHOLD_ID,
+    DEMO_USER_ID,
+    seed_local_demo_identity,
+)
+from app.auth.deps import get_current_user, raise_authorization_http
+from app.auth.firebase import (
+    FirebaseAuthIdentityProvider,
+    UnregisteredUserError,
 )
 from app.auth.identity import (
     AuthenticatedUser,
@@ -29,15 +42,28 @@ from app.auth.local_dev import (
     LocalDevIdentityProvider,
     is_insecure_identity_allowed,
 )
+from app.auth.provider import get_identity_provider, set_identity_provider_override
 
 __all__ = [
+    "AUTHORIZED_HOUSEHOLD_STATE_KEY",
+    "DEMO_HOUSEHOLD_ID",
+    "DEMO_USER_ID",
     "DEV_USER_HEADER",
     "AuthIdentityProvider",
     "AuthenticatedUser",
     "AuthenticationError",
     "AuthorizationError",
+    "FirebaseAuthIdentityProvider",
     "LocalDevIdentityProvider",
+    "UnregisteredUserError",
+    "get_current_user",
+    "get_identity_provider",
     "is_insecure_identity_allowed",
+    "raise_authorization_http",
     "require_household_access",
+    "require_session_for_household",
     "require_session_owner",
+    "resolve_authorized_household",
+    "seed_local_demo_identity",
+    "set_identity_provider_override",
 ]
