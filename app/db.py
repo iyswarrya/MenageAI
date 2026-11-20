@@ -51,11 +51,19 @@ def init_db():
                 user_id TEXT NOT NULL,
                 role TEXT NOT NULL DEFAULT 'member',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                revoked_at TIMESTAMP,
                 PRIMARY KEY (household_id, user_id),
                 FOREIGN KEY (household_id) REFERENCES households(household_id),
                 FOREIGN KEY (user_id) REFERENCES users(user_id)
             )
         """)
+        # Migration-safe: existing DBs created before revoked_at
+        try:
+            cursor.execute(
+                "ALTER TABLE household_members ADD COLUMN revoked_at TIMESTAMP"
+            )
+        except sqlite3.OperationalError:
+            pass
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_members_user ON household_members(user_id)"
         )
@@ -583,28 +591,88 @@ def create_household(household_id: str, *, name: str = "Family") -> str:
     return household_id
 
 
+def get_household_membership(household_id: str, user_id: str) -> dict[str, Any] | None:
+    """Return the membership row if present (active or revoked)."""
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT * FROM household_members
+            WHERE household_id = ? AND user_id = ?
+            """,
+            (household_id, user_id),
+        ).fetchone()
+        return dict(row) if row else None
+
+
 def add_household_member(
     household_id: str, user_id: str, *, role: str = "member"
 ) -> None:
-    """Adds a user to a household. Requires both entities to exist (FK enforced)."""
+    """Adds an active household membership.
+
+    Refuses to silently reactivate a revoked membership — use an explicit
+    administrative restore helper for that.
+    """
+    existing = get_household_membership(household_id, user_id)
+    if existing is not None:
+        if existing.get("revoked_at") is None:
+            return  # already active — idempotent
+        raise ValueError(
+            "Cannot add household member: membership was revoked; "
+            "reactivation requires an explicit administrative action"
+        )
     with get_connection() as conn:
         conn.execute(
             """
-            INSERT INTO household_members (household_id, user_id, role)
-            VALUES (?, ?, ?)
+            INSERT INTO household_members (household_id, user_id, role, revoked_at)
+            VALUES (?, ?, ?, NULL)
             """,
             (household_id, user_id, role),
         )
         conn.commit()
 
 
+def revoke_household_member(household_id: str, user_id: str) -> bool:
+    """Soft-revoke membership. Returns True if an active membership was revoked."""
+    with get_connection() as conn:
+        cur = conn.execute(
+            """
+            UPDATE household_members
+            SET revoked_at = CURRENT_TIMESTAMP
+            WHERE household_id = ? AND user_id = ? AND revoked_at IS NULL
+            """,
+            (household_id, user_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def restore_household_member(household_id: str, user_id: str) -> bool:
+    """Explicit administrative reactivation of a revoked membership.
+
+    Must not be invoked by startup provisioning, Twilio webhooks, or any
+    public HTTP endpoint. Future callers must be explicitly authorized
+    administrative operations only (no silent or env-driven reactivation).
+    """
+    with get_connection() as conn:
+        cur = conn.execute(
+            """
+            UPDATE household_members
+            SET revoked_at = NULL
+            WHERE household_id = ? AND user_id = ? AND revoked_at IS NOT NULL
+            """,
+            (household_id, user_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
 def user_belongs_to_household(user_id: str, household_id: str) -> bool:
-    """Returns True if user_id is a member of household_id."""
+    """Returns True if user_id is an active (non-revoked) member of household_id."""
     with get_connection() as conn:
         row = conn.execute(
             """
             SELECT 1 FROM household_members
-            WHERE user_id = ? AND household_id = ?
+            WHERE user_id = ? AND household_id = ? AND revoked_at IS NULL
             LIMIT 1
             """,
             (user_id, household_id),
@@ -613,12 +681,12 @@ def user_belongs_to_household(user_id: str, household_id: str) -> bool:
 
 
 def list_user_households(user_id: str) -> list[str]:
-    """Returns household_ids the user belongs to, ordered by join time."""
+    """Returns active household_ids the user belongs to, ordered by join time."""
     with get_connection() as conn:
         rows = conn.execute(
             """
             SELECT household_id FROM household_members
-            WHERE user_id = ?
+            WHERE user_id = ? AND revoked_at IS NULL
             ORDER BY created_at ASC
             """,
             (user_id,),
@@ -717,3 +785,39 @@ def session_owned_by_user(session_id: str, user_id: str) -> bool:
     """Returns True if session_id exists and is owned by user_id."""
     binding = get_conversation_session(session_id)
     return binding is not None and binding["user_id"] == user_id
+
+
+def list_household_whatsapp_addresses(household_id: str) -> list[str]:
+    """WhatsApp addresses for active members (non-null whatsapp_e164)."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT u.whatsapp_e164
+            FROM household_members m
+            JOIN users u ON u.user_id = m.user_id
+            WHERE m.household_id = ?
+              AND m.revoked_at IS NULL
+              AND u.whatsapp_e164 IS NOT NULL
+              AND TRIM(u.whatsapp_e164) != ''
+            ORDER BY m.created_at ASC
+            """,
+            (household_id,),
+        ).fetchall()
+        return [r["whatsapp_e164"] for r in rows]
+
+
+def get_conversation_session_for_channel(
+    *, user_id: str, household_id: str, channel: str
+) -> dict[str, Any] | None:
+    """Most recently seen conversation session for user/household/channel."""
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT * FROM conversation_sessions
+            WHERE user_id = ? AND household_id = ? AND channel = ?
+            ORDER BY last_seen_at DESC, created_at DESC
+            LIMIT 1
+            """,
+            (user_id, household_id, channel),
+        ).fetchone()
+        return dict(row) if row else None

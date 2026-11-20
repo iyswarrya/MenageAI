@@ -140,12 +140,7 @@ def test_shared_ledger_private_sessions_and_cross_household():
 def test_revoked_membership_blocks_session_resume():
     _seed_member("user_a", "hh_h")
     db.create_conversation_session("sess_rev", "user_a", "hh_h", channel="web")
-    with db.get_connection() as conn:
-        conn.execute(
-            "DELETE FROM household_members WHERE user_id = ? AND household_id = ?",
-            ("user_a", "hh_h"),
-        )
-        conn.commit()
+    assert db.revoke_household_member("hh_h", "user_a") is True
 
     set_identity_provider_override(
         StubProvider(AuthenticatedUser(user_id="user_a", auth_method="test"))

@@ -148,11 +148,17 @@ You can also run or test it using MCP inspector tools or add it to your desktop 
 
 ## 💬 Twilio WhatsApp Integration
 
-The application includes complete support for mobile WhatsApp interaction via Twilio webhooks:
+The application includes WhatsApp interaction via Twilio webhooks (SEC-01 Phase C):
+
 * **Webhook Endpoint**: `POST /twilio/webhook`
-* When an image (photo of a receipt) or text query is sent to your Twilio WhatsApp number, the webhook asynchronously parses the receipt, registers the transaction, and sends back the coordinator response.
-* **Security & Sandboxing**: Messages and ledgers are sandboxed under the Twilio family ID so that different users' ledger data is kept secure.
-* **Setup**: Configure the Twilio WhatsApp Sandbox or Production number webhook URL to point to `https://<your-deployed-service-url>/twilio/webhook`.
+* **Membership**: Incoming `From` numbers are resolved against registered `users.whatsapp_e164` rows. Unknown senders are **silently ignored** (no agent run).
+* **Provisioning**: Set `FAMILY_WHATSAPP_NUMBERS` (comma-separated `whatsapp:+E164` values) for **controlled initial provisioning** of users/membership into household `twilio_household`. Runtime authorization and receipt broadcasts use **active database household membership**, not the env list. Memberships use soft-revoke (`household_members.revoked_at`). Env re-provision **never** reactivates revoked members. `restore_household_member` is not exposed on any public endpoint and must only be used via an explicitly authorized administrative operation (not yet shipped).
+* **Privacy**: Each member has a private ADK conversation session; the purchase ledger is shared by household. Queries/answers are sent only to the sender. Successful receipt summaries are broadcast to other household members with WhatsApp numbers on file.
+* **Setup**: Point the Twilio WhatsApp Sandbox/Production webhook to `https://<your-deployed-service-url>/twilio/webhook`.
+
+### Residual risk (SEC-02)
+
+Twilio **request signature verification** and media-URL hardening are **not** implemented yet. Until SEC-02 lands, do not treat phone-derived identity on a publicly reachable webhook as production-secure—an attacker who can POST to the webhook URL may spoof a registered `From` number.
 
 
 ## 🐳 Docker Containerization & Submissions

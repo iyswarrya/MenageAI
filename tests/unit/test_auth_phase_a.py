@@ -156,12 +156,7 @@ def test_require_session_owner_denies_missing_session(two_households):
 
 def test_require_session_owner_denies_after_membership_revoked(two_households):
     db.create_conversation_session("sess_revoked", "user_a", "hh_1", channel="web")
-    with db.get_connection() as conn:
-        conn.execute(
-            "DELETE FROM household_members WHERE user_id = ? AND household_id = ?",
-            ("user_a", "hh_1"),
-        )
-        conn.commit()
+    assert db.revoke_household_member("hh_1", "user_a") is True
     with pytest.raises(AuthorizationError):
         require_session_owner(two_households["user_a"], "sess_revoked")
 

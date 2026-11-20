@@ -44,9 +44,13 @@ from app.auth import (
     AuthenticatedUser,
     AuthorizationError,
     get_current_user,
+    get_or_create_twilio_session_binding,
+    list_broadcast_whatsapp_recipients,
+    provision_twilio_household_from_env,
     raise_authorization_http,
     require_session_for_household,
     resolve_authorized_household,
+    resolve_twilio_sender,
     seed_local_demo_identity,
 )
 
@@ -87,6 +91,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.runner = runner
     app.state.agent_app_name = adk_app.name
     seed_local_demo_identity()
+    # Controlled provisioning only — runtime authz/broadcast use DB membership.
+    provision_twilio_household_from_env()
     yield
 
 
@@ -286,10 +292,11 @@ def twilio_send_message(
 async def process_webhook_async(
     From: str, To: str, Body: str | None, MediaUrl0: str | None
 ):
-    """Background task to run the ADK agent workflow and send the responses back via Twilio REST API.
+    """Background task: membership-gated WhatsApp agent run + optional receipt broadcast.
 
-    Residual risk (SEC-01 Phase B / SEC-02): Twilio household tenancy still uses the
-    legacy shared session id until Phase C. Webhook signature verification is SEC-02.
+    Residual risk (SEC-02): this webhook does not verify Twilio request signatures.
+    Do not treat phone-derived identity as trustworthy on a public endpoint until
+    SEC-02 is implemented. Unknown senders are silently ignored (no agent run).
     """
     import requests
 
@@ -297,10 +304,16 @@ async def process_webhook_async(
     runner = app.state.runner
     agent_app_name = app.state.agent_app_name
 
-    # Legacy shared tenancy until Phase C Twilio membership migration.
-    session_id = "twilio_session_family"
-    user_id = f"twilio_user_{From.replace('whatsapp:', '')}"
-    legacy_household_id = session_id
+    sender = resolve_twilio_sender(From)
+    if sender is None:
+        sys_logger.info("Ignoring WhatsApp message from unregistered sender")
+        return
+
+    user_id = sender.user.user_id
+    household_id = sender.household_id
+    binding = get_or_create_twilio_session_binding(user_id, household_id)
+    session_id = binding["session_id"]
+    trusted_state = {AUTHORIZED_HOUSEHOLD_STATE_KEY: household_id}
 
     try:
         session = await runner.session_service.get_session(
@@ -311,10 +324,10 @@ async def process_webhook_async(
                 user_id=user_id,
                 app_name=agent_app_name,
                 session_id=session_id,
-                state={AUTHORIZED_HOUSEHOLD_STATE_KEY: legacy_household_id},
+                state=trusted_state,
             )
         else:
-            session.state[AUTHORIZED_HOUSEHOLD_STATE_KEY] = legacy_household_id
+            session.state[AUTHORIZED_HOUSEHOLD_STATE_KEY] = household_id
 
         parts = []
         text_message = Body.strip() if Body else ""
@@ -392,12 +405,12 @@ async def process_webhook_async(
         )
 
         if account_sid and auth_token and twilio_number:
-            # 1. Send the response back directly to the sender
+            # 1. Always reply privately to the sender
             twilio_send_message(
                 account_sid, auth_token, twilio_number, From, response_text
             )
 
-            # 2. Proactive Broadcast:
+            # 2. Broadcast only successful receipt summaries to household members
             has_validation_failed = (
                 "could not reliably read" in response_text.lower()
                 or "invalid receipt" in response_text.lower()
@@ -405,22 +418,16 @@ async def process_webhook_async(
             if (
                 intent_detected == "receipt" or is_receipt_upload
             ) and not has_validation_failed:
-                family_numbers_str = os.environ.get("FAMILY_WHATSAPP_NUMBERS", "")
-                if family_numbers_str:
-                    family_members = [
-                        n.strip() for n in family_numbers_str.split(",") if n.strip()
-                    ]
-                    for member in family_members:
-                        if member == From:
-                            # Skip sending duplicate to the sender
-                            continue
-                        twilio_send_message(
-                            account_sid,
-                            auth_token,
-                            twilio_number,
-                            member,
-                            response_text,
-                        )
+                for member in list_broadcast_whatsapp_recipients(
+                    household_id, exclude_whatsapp=From
+                ):
+                    twilio_send_message(
+                        account_sid,
+                        auth_token,
+                        twilio_number,
+                        member,
+                        response_text,
+                    )
     except Exception as e:
         sys_logger.error(f"Error in process_webhook_async: {e}", exc_info=True)
 
@@ -433,11 +440,11 @@ async def twilio_webhook(
     To: str = Form(...),
     MediaUrl0: str = Form(None),
 ):
-    """Receives WhatsApp incoming messages directly from Twilio,
-    spawns a background task to process it asynchronously,
-    and returns an empty TwiML response immediately to prevent timeout.
+    """Receives WhatsApp messages from Twilio and processes them asynchronously.
 
-    Not Firebase-authenticated. Signature verification is tracked under SEC-02.
+    Not Firebase-authenticated. Membership is resolved from registered WhatsApp
+    numbers in SQLite. Twilio request signature verification is SEC-02 and is
+    required before treating this public webhook as production-secure.
     """
     sys_logger = logging.getLogger("twilio_integration")
     sys_logger.info(
