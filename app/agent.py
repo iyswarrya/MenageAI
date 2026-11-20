@@ -136,6 +136,9 @@ class MemoryAgentOutput(BaseModel):
     receipt: ReceiptData
     is_duplicate_receipt: bool
     duplicate_items: List[str]
+    persisted_receipt_id: int | None = None
+    persisted_household_id: str | None = None
+    persisted_invocation_id: str | None = None
 
 
 class DealAlert(BaseModel):
@@ -233,6 +236,25 @@ def _trusted_household_id(ctx=None) -> str:
     return "unauthorized"
 
 
+def _invocation_id(ctx) -> str | None:
+    """Return the ADK invocation id for this run, when the node has a context."""
+    if ctx is None:
+        return None
+    invocation = None
+    getter = getattr(ctx, "get_invocation_context", None)
+    if callable(getter):
+        try:
+            invocation = getter()
+        except Exception:
+            invocation = None
+    if invocation is None:
+        invocation = getattr(ctx, "_invocation_context", None)
+    invocation_id = getattr(invocation, "invocation_id", None)
+    if isinstance(invocation_id, str) and invocation_id.strip():
+        return invocation_id.strip()
+    return None
+
+
 def memory_engine(node_input: ReceiptData, ctx=None) -> MemoryAgentOutput:
     """Stores the receipt and items in SQLite and checks for duplicate purchases."""
     registry.logger.log_input("memory_engine", node_input)
@@ -252,13 +274,31 @@ def memory_engine(node_input: ReceiptData, ctx=None) -> MemoryAgentOutput:
     )
     duplicate_items_warnings = [alert.message for alert in dup_alerts]
 
+    persisted_receipt_id = None
+    persisted_household_id = None
+    persisted_invocation_id = None
+    invocation_id = _invocation_id(ctx)
     if not is_duplicate_receipt:
-        registry.memory_repo.save_receipt(node_input, household_id)
+        saved = registry.memory_repo.save_receipt(
+            node_input, household_id, invocation_id=invocation_id
+        )
+        receipt_id = getattr(saved, "receipt_id", None)
+        if (
+            getattr(saved, "success", False) is True
+            and type(receipt_id) is int
+            and receipt_id > 0
+        ):
+            persisted_receipt_id = receipt_id
+            persisted_household_id = household_id
+            persisted_invocation_id = invocation_id
 
     res = MemoryAgentOutput(
         receipt=node_input,
         is_duplicate_receipt=is_duplicate_receipt,
         duplicate_items=duplicate_items_warnings,
+        persisted_receipt_id=persisted_receipt_id,
+        persisted_household_id=persisted_household_id,
+        persisted_invocation_id=persisted_invocation_id,
     )
     registry.logger.log_output("memory_engine", res)
     return res

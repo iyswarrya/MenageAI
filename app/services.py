@@ -132,13 +132,21 @@ Keep names clean, descriptive, preserve brand names when present, and ground eve
 
 class SqlitePurchaseMemoryRepository:
     def save_receipt(
-        self, receipt: ReceiptData, household_id: str = "default"
+        self,
+        receipt: ReceiptData,
+        household_id: str = "default",
+        invocation_id: str | None = None,
     ) -> SavedReceiptResult:
         """Saves a receipt and its items to SQLite database."""
         try:
             items_tuples = [(item.name, item.price) for item in receipt.items]
             receipt_id = db.save_receipt_and_items(
-                receipt.store, receipt.date, receipt.total, items_tuples, household_id
+                receipt.store,
+                receipt.date,
+                receipt.total,
+                items_tuples,
+                household_id,
+                invocation_id=invocation_id,
             )
             return SavedReceiptResult(receipt_id=receipt_id, success=True)
         except Exception as e:

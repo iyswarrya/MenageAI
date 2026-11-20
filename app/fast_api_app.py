@@ -26,8 +26,11 @@ from fastapi import (
     FastAPI,
     File,
     Form,
+    HTTPException,
+    Request,
     Response,
     UploadFile,
+    status,
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -52,6 +55,19 @@ from app.auth import (
     resolve_authorized_household,
     resolve_twilio_sender,
     seed_local_demo_identity,
+)
+from app.auth.twilio_media import MediaFetchError, download_twilio_media
+from app.auth.twilio_signature import (
+    TwilioWebhookRejected,
+    load_twilio_webhook_config,
+    parse_twilio_form,
+    verify_twilio_webhook,
+    webhook_dispatch_fields,
+)
+from app.interfaces import (
+    PERSISTED_HOUSEHOLD_ID_FIELD,
+    PERSISTED_INVOCATION_ID_FIELD,
+    PERSISTED_RECEIPT_ID_FIELD,
 )
 
 load_dotenv()
@@ -266,13 +282,24 @@ async def agent_upload(
     }
 
 
+def _mask_phone(value: str | None) -> str:
+    """Keep a short suffix so logs stay correlatable without the full number."""
+    if not isinstance(value, str) or not value:
+        return "redacted"
+    digits = "".join(ch for ch in value if ch.isdigit())
+    if len(digits) < 4:
+        return "redacted"
+    return f"***{digits[-4:]}"
+
+
 def twilio_send_message(
     account_sid: str, auth_token: str, from_num: str, to_num: str, body: str
 ):
     import requests
 
     sys_logger = logging.getLogger("twilio_integration")
-    sys_logger.info(f"Starting Twilio WhatsApp broadcast to {to_num}...")
+    destination = _mask_phone(to_num)
+    sys_logger.info("Starting Twilio WhatsApp send to %s", destination)
     try:
         resp = requests.post(
             f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json",
@@ -281,12 +308,66 @@ def twilio_send_message(
             timeout=15,
         )
         sys_logger.info(
-            f"Twilio WhatsApp broadcast to {to_num} status code: {resp.status_code}"
+            "Twilio WhatsApp send to %s status code: %s",
+            destination,
+            resp.status_code,
         )
         if resp.status_code not in (200, 201):
-            sys_logger.error(f"Twilio error response body: {resp.text}")
-    except Exception as e:
-        sys_logger.error(f"Failed to broadcast Twilio WhatsApp to {to_num}: {e}")
+            sys_logger.error(
+                "Twilio WhatsApp send to %s failed with status %s",
+                destination,
+                resp.status_code,
+            )
+    except Exception:
+        sys_logger.error("Twilio WhatsApp send to %s failed", destination)
+
+
+_MEDIA_FAILURE_REPLY = (
+    "I couldn't read that image. Please send a JPEG, PNG, or WebP photo."
+)
+
+
+def _reply_media_failure(sender: str, twilio_number: str) -> None:
+    """Private note to the sender. Never a household broadcast."""
+    account_sid = os.environ.get("TWILIO_ACCOUNT_SID", "").strip()
+    auth_token = os.environ.get("TWILIO_AUTH_TOKEN", "").strip()
+    if not account_sid or not auth_token or not twilio_number:
+        return
+    twilio_send_message(
+        account_sid,
+        auth_token,
+        twilio_number,
+        sender,
+        _MEDIA_FAILURE_REPLY,
+    )
+
+
+def _output_field(output, name: str):
+    if isinstance(output, dict):
+        return output.get(name)
+    return getattr(output, name, None)
+
+
+def _persisted_receipt_for_run(event, run_id: str, household_id: str) -> int | None:
+    """Receipt id only when this event records this run's insert for this household."""
+    node_name = event.node_info.name if getattr(event, "node_info", None) else ""
+    if node_name != "memory_engine" or not run_id or not household_id:
+        return None
+    if getattr(event, "invocation_id", None) != run_id:
+        return None
+    output = getattr(event, "output", None)
+    receipt_id = _output_field(output, PERSISTED_RECEIPT_ID_FIELD)
+    output_household = _output_field(output, PERSISTED_HOUSEHOLD_ID_FIELD)
+    output_invocation = _output_field(output, PERSISTED_INVOCATION_ID_FIELD)
+    if type(receipt_id) is not int or receipt_id <= 0:
+        return None
+    if output_household != household_id or output_invocation != run_id:
+        return None
+    from app import db
+
+    if not db.receipt_matches_run(receipt_id, household_id, run_id):
+        return None
+    return receipt_id
 
 
 async def process_webhook_async(
@@ -294,12 +375,11 @@ async def process_webhook_async(
 ):
     """Background task: membership-gated WhatsApp agent run + optional receipt broadcast.
 
-    Residual risk (SEC-02): this webhook does not verify Twilio request signatures.
-    Do not treat phone-derived identity as trustworthy on a public endpoint until
-    SEC-02 is implemented. Unknown senders are silently ignored (no agent run).
+    The HTTP webhook verifies the Twilio signature before scheduling this task.
+    Unknown senders are silently ignored (no agent run). Media downloads use
+    SEC-02B checks. Household broadcast happens only when memory_engine reports
+    a persisted receipt id from a successful save.
     """
-    import requests
-
     sys_logger = logging.getLogger("twilio_integration")
     runner = app.state.runner
     agent_app_name = app.state.agent_app_name
@@ -331,33 +411,24 @@ async def process_webhook_async(
 
         parts = []
         text_message = Body.strip() if Body else ""
-        is_receipt_upload = False
 
         if MediaUrl0:
-            is_receipt_upload = True
             try:
-                account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
-                auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
-                auth = (account_sid, auth_token) if account_sid and auth_token else None
-
-                resp = requests.get(MediaUrl0, auth=auth, timeout=15)
-                sys_logger.info(
-                    f"Twilio media download status code: {resp.status_code}"
+                downloaded = download_twilio_media(MediaUrl0)
+            except MediaFetchError as exc:
+                sys_logger.info("Twilio media download rejected: %s", exc.reason)
+                downloaded = None
+            if downloaded is not None:
+                parts.append(
+                    types.Part.from_bytes(
+                        data=downloaded.data, mime_type=downloaded.content_type
+                    )
                 )
-
-                if resp.status_code == 200:
-                    content_type = resp.headers.get("content-type", "image/jpeg")
-                    parts.append(
-                        types.Part.from_bytes(data=resp.content, mime_type=content_type)
-                    )
-                    if not text_message:
-                        text_message = "Analyze this receipt image."
-                else:
-                    sys_logger.warning(
-                        f"Failed to download Twilio media: HTTP {resp.status_code}"
-                    )
-            except Exception as e:
-                sys_logger.error(f"Error downloading Twilio media: {e}")
+                if not text_message:
+                    text_message = "Analyze this receipt image."
+            elif not text_message:
+                _reply_media_failure(From, To)
+                return
 
         if text_message:
             parts.append(types.Part.from_text(text=text_message))
@@ -368,32 +439,30 @@ async def process_webhook_async(
 
         content = types.Content(role="user", parts=parts)
         response_text = ""
-        intent_detected = "query"
+        produced_text = False
+        persisted_receipt_id = None
+        run_id = str(uuid.uuid4())
 
         async for event in runner.run_async(
-            new_message=content, user_id=user_id, session_id=session.id
+            new_message=content,
+            user_id=user_id,
+            session_id=session.id,
+            invocation_id=run_id,
         ):
             node_name = event.node_info.name if event.node_info else ""
-            if node_name == "intent_classifier" and event.output:
-                try:
-                    if hasattr(event.output, "intent"):
-                        intent_detected = event.output.intent
-                    elif isinstance(event.output, str):
-                        import json
-
-                        intent_detected = json.loads(event.output).get(
-                            "intent", "query"
-                        )
-                except Exception:
-                    pass
-            elif node_name in ("response_agent", "query_agent"):
+            receipt_id = _persisted_receipt_for_run(event, run_id, household_id)
+            if receipt_id is not None:
+                persisted_receipt_id = receipt_id
+            if node_name in ("response_agent", "query_agent"):
                 if event.content and event.content.parts:
                     for part in event.content.parts:
                         if part.text:
                             response_text += part.text
+                            produced_text = True
             elif node_name == "invalid_receipt_responder":
                 if event.output:
                     response_text += str(event.output)
+                    produced_text = True
 
         if not response_text:
             response_text = "Sorry, I encountered an issue processing your request."
@@ -410,14 +479,8 @@ async def process_webhook_async(
                 account_sid, auth_token, twilio_number, From, response_text
             )
 
-            # 2. Broadcast only successful receipt summaries to household members
-            has_validation_failed = (
-                "could not reliably read" in response_text.lower()
-                or "invalid receipt" in response_text.lower()
-            )
-            if (
-                intent_detected == "receipt" or is_receipt_upload
-            ) and not has_validation_failed:
+            # 2. Broadcast only after this run inserted a receipt for this household.
+            if produced_text and persisted_receipt_id is not None:
                 for member in list_broadcast_whatsapp_recipients(
                     household_id, exclude_whatsapp=From
                 ):
@@ -428,35 +491,58 @@ async def process_webhook_async(
                         member,
                         response_text,
                     )
-    except Exception as e:
-        sys_logger.error(f"Error in process_webhook_async: {e}", exc_info=True)
+    except Exception as exc:
+        sys_logger.error("Error in process_webhook_async: %s", type(exc).__name__)
+
+
+_EMPTY_TWIML = """<?xml version="1.0" encoding="UTF-8"?>
+    <Response></Response>"""
+
+
+def _empty_twiml() -> Response:
+    return Response(content=_EMPTY_TWIML, media_type="application/xml")
 
 
 @app.post("/twilio/webhook")
-async def twilio_webhook(
-    background_tasks: BackgroundTasks,
-    Body: str = Form(None),
-    From: str = Form(...),
-    To: str = Form(...),
-    MediaUrl0: str = Form(None),
-):
-    """Receives WhatsApp messages from Twilio and processes them asynchronously.
+async def twilio_webhook(request: Request, background_tasks: BackgroundTasks):
+    """Receive a Twilio WhatsApp webhook after signature verification.
 
-    Not Firebase-authenticated. Membership is resolved from registered WhatsApp
-    numbers in SQLite. Twilio request signature verification is SEC-02 and is
-    required before treating this public webhook as production-secure.
+    Not Firebase-authenticated. X-Twilio-Signature is checked against
+    TWILIO_AUTH_TOKEN and the exact TWILIO_WEBHOOK_PUBLIC_URL before any
+    sender lookup or background work. A valid request still returns empty
+    TwiML immediately. Media downloads are restricted by SEC-02B. At most two
+    redirects are followed, and only to api.twilio.com or mms.twiliocdn.com.
     """
     sys_logger = logging.getLogger("twilio_integration")
+    try:
+        load_twilio_webhook_config()
+        params = parse_twilio_form(await request.form())
+        verify_twilio_webhook(params, request.headers.get("X-Twilio-Signature"))
+        fields = webhook_dispatch_fields(params)
+    except TwilioWebhookRejected:
+        sys_logger.info("Rejected Twilio webhook")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden"
+        ) from None
+    except Exception:
+        sys_logger.info("Rejected Twilio webhook")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden"
+        ) from None
+
+    if fields is None:
+        # Authenticated, but From/To are missing or repeated. Do not look up a sender.
+        sys_logger.info("Authenticated Twilio webhook had no unambiguous message")
+        return _empty_twiml()
+
+    sender, recipient, body, media_url = fields
     sys_logger.info(
-        f"Received Twilio Webhook from {From} to {To}. Offloading to background task..."
+        "Received Twilio webhook from %s to %s. Offloading to background task.",
+        _mask_phone(sender),
+        _mask_phone(recipient),
     )
-
-    background_tasks.add_task(process_webhook_async, From, To, Body, MediaUrl0)
-
-    # Return empty Response immediately to satisfy Twilio's 15s timeout window
-    twiml_response = """<?xml version="1.0" encoding="UTF-8"?>
-    <Response></Response>"""
-    return Response(content=twiml_response, media_type="application/xml")
+    background_tasks.add_task(process_webhook_async, sender, recipient, body, media_url)
+    return _empty_twiml()
 
 
 @app.get("/purchases")

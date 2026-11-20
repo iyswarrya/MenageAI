@@ -166,7 +166,7 @@ def test_provisioning_preserves_existing_other_household_assignment(monkeypatch)
 
 
 def _install_runner(client, *, capture: dict):
-    async def fake_events(*, new_message, user_id, session_id):
+    async def fake_events(*, new_message, user_id, session_id, **_kwargs):
         # Capture authorized household from session state used by agent path
         session = await client.app.state.runner.session_service.get_session(
             app_name=client.app.state.agent_app_name,
@@ -332,7 +332,7 @@ async def test_whatsapp_receipt_write_attributed_to_authorized_household(monkeyp
     monkeypatch.setenv("TWILIO_AUTH_TOKEN", "token")
     capture: dict = {}
 
-    async def fake_receipt_events(*, new_message, user_id, session_id):
+    async def fake_receipt_events(*, new_message, user_id, session_id, **_kwargs):
         session = await client.app.state.runner.session_service.get_session(
             app_name=client.app.state.agent_app_name,
             user_id=user_id,

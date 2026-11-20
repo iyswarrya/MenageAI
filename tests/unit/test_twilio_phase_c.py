@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
+from twilio.request_validator import RequestValidator
 
 from app import db
 from app.auth import (
@@ -206,18 +207,32 @@ async def test_registered_receipt_broadcasts_to_other_members(monkeypatch):
     monkeypatch.setenv("TWILIO_ACCOUNT_SID", "ACtest")
     monkeypatch.setenv("TWILIO_AUTH_TOKEN", "token")
 
-    async def fake_events(*_a, **_k):
-        intent_evt = MagicMock()
-        intent_evt.node_info = MagicMock()
-        intent_evt.node_info.name = "intent_classifier"
-        intent_evt.output = MagicMock()
-        intent_evt.output.intent = "receipt"
-        intent_evt.content = None
-        yield intent_evt
+    async def fake_events(*_a, **kwargs):
+        run_id = kwargs["invocation_id"]
+        receipt_id = db.save_receipt_and_items(
+            "Safeway",
+            "2026-07-02",
+            9.99,
+            [("Coffee", 9.99)],
+            household_id=DEFAULT_TWILIO_HOUSEHOLD_ID,
+            invocation_id=run_id,
+        )
+        saved = MagicMock()
+        saved.node_info = MagicMock()
+        saved.node_info.name = "memory_engine"
+        saved.invocation_id = run_id
+        saved.output = {
+            "persisted_receipt_id": receipt_id,
+            "persisted_household_id": DEFAULT_TWILIO_HOUSEHOLD_ID,
+            "persisted_invocation_id": run_id,
+        }
+        saved.content = None
+        yield saved
 
         resp_evt = MagicMock()
         resp_evt.node_info = MagicMock()
         resp_evt.node_info.name = "response_agent"
+        resp_evt.invocation_id = run_id
         resp_evt.content = MagicMock()
         part = MagicMock()
         part.text = "Logged Safeway coffee $9.99"
@@ -309,15 +324,23 @@ async def test_failed_receipt_not_broadcast(monkeypatch):
         assert sent == ["whatsapp:+15551111111"]
 
 
-def test_webhook_endpoint_still_public():
+def test_webhook_valid_signature_returns_empty_twiml(monkeypatch):
+    """SEC-02A: a signed webhook still returns empty TwiML and ignores unknown senders."""
+    token = "test-twilio-auth-token"
+    public_url = "https://menage.example.com/twilio/webhook"
+    monkeypatch.setenv("TWILIO_AUTH_TOKEN", token)
+    monkeypatch.setenv("TWILIO_WEBHOOK_PUBLIC_URL", public_url)
+    params = {
+        "From": "whatsapp:+19999999999",
+        "To": "whatsapp:+15550000000",
+        "Body": "hi",
+    }
+    signature = RequestValidator(token).compute_signature(public_url, params)
     with TestClient(app) as client:
         res = client.post(
             "/twilio/webhook",
-            data={
-                "From": "whatsapp:+19999999999",
-                "To": "whatsapp:+15550000000",
-                "Body": "hi",
-            },
+            data=params,
+            headers={"X-Twilio-Signature": signature},
         )
         assert res.status_code == 200
         assert "Response" in res.text

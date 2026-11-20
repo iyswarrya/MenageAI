@@ -21,6 +21,7 @@ dependencies = [
     "sqlalchemy>=2,<3",
     "uvicorn~=0.34.0",
     "firebase-admin>=7.7.0",
+    "twilio>=9.13.0",
 ]
 requires-python = ">=3.11,<3.14"
 

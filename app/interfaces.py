@@ -64,6 +64,14 @@ class SavedReceiptResult(BaseModel):
     success: bool
 
 
+# Fields on the memory_engine event. Set only from SavedReceiptResult after a
+# successful insert for this invocation and household. Household broadcast must
+# use these values, not message text or session state.
+PERSISTED_RECEIPT_ID_FIELD = "persisted_receipt_id"
+PERSISTED_HOUSEHOLD_ID_FIELD = "persisted_household_id"
+PERSISTED_INVOCATION_ID_FIELD = "persisted_invocation_id"
+
+
 class DuplicateAlert(BaseModel):
     message: str
 
@@ -101,7 +109,10 @@ class ReceiptParser(Protocol):
 @runtime_checkable
 class PurchaseMemoryRepository(Protocol):
     def save_receipt(
-        self, receipt: ReceiptData, household_id: str = "default"
+        self,
+        receipt: ReceiptData,
+        household_id: str = "default",
+        invocation_id: str | None = None,
     ) -> SavedReceiptResult:
         """Saves receipt data and its items to purchase history storage."""
         ...

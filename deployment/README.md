@@ -72,10 +72,48 @@ Configure the following environment variables. In Cloud Run, these are set durin
 | `GOOGLE_CLOUD_PROJECT` | Active Google Cloud Project ID | `YOUR_PROJECT_ID` |
 | `GOOGLE_CLOUD_LOCATION` | Active Vertex AI location | `global` |
 | `USE_MCP_DEALS` | Enable deals extraction and grounding validation | `true` |
-| `TWILIO_ACCOUNT_SID` | Your Twilio Account SID (for WhatsApp integration) | `AC...` |
-| `TWILIO_AUTH_TOKEN` | Your Twilio Auth Token (for WhatsApp integration) | `d0...` |
+| `TWILIO_ACCOUNT_SID` | Twilio Account SID for WhatsApp. Mount from Secret Manager. | Secret Manager `TWILIO_ACCOUNT_SID` |
+| `TWILIO_AUTH_TOKEN` | Twilio auth token. Used for the Messages API and for `X-Twilio-Signature` checks. Mount from Secret Manager only. Do not put the token in `--update-env-vars`, the container image, shell history, or git. | Secret Manager `TWILIO_AUTH_TOKEN` |
+| `TWILIO_WEBHOOK_PUBLIC_URL` | Exact public HTTPS webhook URL configured in the Twilio console, including the path and any query string. SEC-02A validates signatures against this value and does not read `Host` or `X-Forwarded-*`. This URL is not a credential. | `https://YOUR_SERVICE_URL/twilio/webhook` |
+| `TWILIO_MEDIA_MAX_BYTES` | Optional WhatsApp media download cap. Defaults to 10485760 (10 MB). Set with `--update-env-vars`. It is not a secret, and values above 10 MB are rejected. | `10485760` |
 | `TWILIO_NUMBER` | Your Twilio Outbound WhatsApp Number | `whatsapp:Your Twilio Outbound WhatsApp Number` |
 | `FAMILY_WHATSAPP_NUMBERS` | Comma-separated list of approved sender numbers | `whatsapp:approved sender number1`,`whatsapp:approved sender number2` |
+
+### Twilio credentials and webhook URL
+
+`TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN` are secrets. Create or rotate them from stdin so the values are not command arguments and do not land in shell history:
+
+```bash
+gcloud services enable secretmanager.googleapis.com --project=YOUR_PROJECT_ID
+
+# First version. Paste the token, then press Ctrl-D. Do not pass it as a flag.
+gcloud secrets create TWILIO_AUTH_TOKEN \
+    --replication-policy=automatic \
+    --data-file=-
+
+# Later versions:
+gcloud secrets versions add TWILIO_AUTH_TOKEN --data-file=-
+```
+
+Repeat that pattern for `TWILIO_ACCOUNT_SID`. Grant the Cloud Run runtime service account `roles/secretmanager.secretAccessor` on those secrets. Deploy mounts them with `--update-secrets`. Do not copy the token into `--update-env-vars` or `--set-env-vars`.
+
+`TWILIO_WEBHOOK_PUBLIC_URL` is the public URL Twilio calls. Set it as a normal environment variable after the Cloud Run URL exists. `--update-env-vars` changes only the listed variables and leaves the mounted secrets in place:
+
+```bash
+gcloud run services update menageai \
+    --region us-west1 \
+    --update-env-vars "TWILIO_WEBHOOK_PUBLIC_URL=https://YOUR_SERVICE_URL/twilio/webhook"
+```
+
+Use the same string in the Twilio console webhook field, including a query string when there is one. If that string contains a comma, gcloud's default env-var delimiter will split it. Quote the value and set another delimiter, such as `@`:
+
+```bash
+gcloud run services update menageai \
+    --region us-west1 \
+    --update-env-vars "^@^TWILIO_WEBHOOK_PUBLIC_URL=https://YOUR_SERVICE_URL/twilio/webhook?ids=1,2"
+```
+
+Do not use `--set-env-vars` or `--clear-env-vars` for this update. Those flags replace the service environment and can drop the secret mounts. The webhook returns HTTP 403 until both `TWILIO_AUTH_TOKEN` and `TWILIO_WEBHOOK_PUBLIC_URL` are set and the URL matches Twilio exactly.
 
 ---
 
@@ -103,9 +141,11 @@ Configure the following environment variables. In Cloud Run, these are set durin
        --image us-west1-docker.pkg.dev/YOUR_PROJECT_ID/YOUR_PROJECT_REPO/menageai:latest \
        --region us-west1 \
        --allow-unauthenticated \
-       --update-env-vars GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=YOUR_PROJECT_ID,GOOGLE_CLOUD_LOCATION=global,USE_MCP_DEALS=true,TWILIO_NUMBER=whatsapp:YOUR_TWILIO_OUTBOUND_WHATSAPP_NUMBER,FAMILY_WHATSAPP_NUMBERS=whatsapp:SENDER_NUMBER1,whatsapp:SENDER_NUMBER2,... \
+       --update-env-vars "GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=YOUR_PROJECT_ID,GOOGLE_CLOUD_LOCATION=global,USE_MCP_DEALS=true,TWILIO_NUMBER=whatsapp:YOUR_TWILIO_OUTBOUND_WHATSAPP_NUMBER,FAMILY_WHATSAPP_NUMBERS=whatsapp:SENDER_NUMBER1,whatsapp:SENDER_NUMBER2,TWILIO_WEBHOOK_PUBLIC_URL=https://YOUR_SERVICE_URL/twilio/webhook" \
        --update-secrets TWILIO_ACCOUNT_SID=TWILIO_ACCOUNT_SID:latest,TWILIO_AUTH_TOKEN=TWILIO_AUTH_TOKEN:latest
    ```
+
+   On the first deploy the service URL is not known yet. Omit `TWILIO_WEBHOOK_PUBLIC_URL` from that command, then set it with the Section 4 `gcloud run services update` command. That update does not send `TWILIO_AUTH_TOKEN`.
 
 ---
 
@@ -119,7 +159,7 @@ agents-cli deploy \
   --service-name menageai \
   --no-confirm-project \
   --secrets TWILIO_ACCOUNT_SID=TWILIO_ACCOUNT_SID,TWILIO_AUTH_TOKEN=TWILIO_AUTH_TOKEN \
-  --update-env-vars FAMILY_WHATSAPP_NUMBERS=whatsapp:SENDER_NUMBER1,whatsapp:SENDER_NUMBER2,...,TWILIO_NUMBER=whatsapp:YOUR_TWILIO_OUTBOUND_WHATSAPP_NUMBER,...
+  --update-env-vars "FAMILY_WHATSAPP_NUMBERS=whatsapp:SENDER_NUMBER1,whatsapp:SENDER_NUMBER2,TWILIO_NUMBER=whatsapp:YOUR_TWILIO_OUTBOUND_WHATSAPP_NUMBER,TWILIO_WEBHOOK_PUBLIC_URL=https://YOUR_SERVICE_URL/twilio/webhook"
 ```
 
 ---
@@ -130,9 +170,9 @@ Follow these sequential steps to reproduce this exact deployment in a clean proj
 
 1. **Clone/Checkout the Repository** in your workspace.
 2. **Log in** to your target GCP Project and enable the required APIs (listed in Section 2).
-3. Ensure the Twilio Secrets are stored in GCP Secret Manager under the names `TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN` (if using Twilio integration).
+3. Store `TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN` in Secret Manager (Section 4). Do not place the auth token in an env file that is deployed with the image.
 4. Run the **Build** command to package and submit the container to Artifact Registry.
 5. Run the **Deploy** command. Once completed, note the generated service URL.
 6. Run the IAM command in Section 3B to allow Gemini Enterprise to invoke your service.
 7. Open the generated Service URL in an **incognito window** to test the web client.
-8. Update your Twilio Console WhatsApp Webhook to point to `https://YOUR_SERVICE_URL/twilio/webhook` to test mobile WhatsApp messaging.
+8. Set `TWILIO_WEBHOOK_PUBLIC_URL` to the service webhook URL with the `gcloud run services update` command in Section 4. Use that same exact URL as the Twilio console WhatsApp webhook. Signature checks fail closed until the two strings match. The update command sets only the public URL and does not resend `TWILIO_AUTH_TOKEN`.

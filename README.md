@@ -153,12 +153,13 @@ The application includes WhatsApp interaction via Twilio webhooks (SEC-01 Phase 
 * **Webhook Endpoint**: `POST /twilio/webhook`
 * **Membership**: Incoming `From` numbers are resolved against registered `users.whatsapp_e164` rows. Unknown senders are **silently ignored** (no agent run).
 * **Provisioning**: Set `FAMILY_WHATSAPP_NUMBERS` (comma-separated `whatsapp:+E164` values) for **controlled initial provisioning** of users/membership into household `twilio_household`. Runtime authorization and receipt broadcasts use **active database household membership**, not the env list. Memberships use soft-revoke (`household_members.revoked_at`). Env re-provision **never** reactivates revoked members. `restore_household_member` is not exposed on any public endpoint and must only be used via an explicitly authorized administrative operation (not yet shipped).
-* **Privacy**: Each member has a private ADK conversation session; the purchase ledger is shared by household. Queries/answers are sent only to the sender. Successful receipt summaries are broadcast to other household members with WhatsApp numbers on file.
+* **Privacy**: Each member has a private ADK conversation session; the purchase ledger is shared by household. Queries and answers are sent only to the sender. A receipt summary is broadcast to other household members only after this run's `memory_engine` event matches a receipt row inserted for the sender's household.
 * **Setup**: Point the Twilio WhatsApp Sandbox/Production webhook to `https://<your-deployed-service-url>/twilio/webhook`.
+* **Signature (SEC-02A)**: Set `TWILIO_AUTH_TOKEN` and `TWILIO_WEBHOOK_PUBLIC_URL`. The public URL must be the exact HTTPS webhook URL configured in Twilio, including any query string. The app validates `X-Twilio-Signature` with Twilio's `RequestValidator` against that configured URL. It does not build the URL from `Host` or `X-Forwarded-*` headers. Missing configuration, a missing signature, or an invalid signature returns HTTP 403 and does not look up the sender, read household data, download media, run the agent, or send a WhatsApp message. A valid signature still returns empty TwiML immediately.
 
-### Residual risk (SEC-02)
+### Media downloads (SEC-02B)
 
-Twilio **request signature verification** and media-URL hardening are **not** implemented yet. Until SEC-02 lands, do not treat phone-derived identity on a publicly reachable webhook as production-secure—an attacker who can POST to the webhook URL may spoof a registered `From` number.
+`MediaUrl0` must start at `https://api.twilio.com` on port 443. Twilio's Help Center article 223183748 documents a redirect from that URL to a short-lived `https://mms.twiliocdn.com` object. This client follows at most two redirects, and only when every hop is HTTPS on port 443, the host is exactly `api.twilio.com` or `mms.twiliocdn.com`, every DNS answer is public, and the TLS connection is pinned to one of those answers. Twilio Basic credentials are sent only to `api.twilio.com`. The legacy shared host `s3-external-1.amazonaws.com` is rejected. Lookalike hosts, embedded credentials, private and metadata addresses, and files that are not a JPEG, PNG, or WebP image are rejected. Downloads are size-capped (`TWILIO_MEDIA_MAX_BYTES`, default 10 MB). PDF receipts are deferred.
 
 
 ## 🐳 Docker Containerization & Submissions

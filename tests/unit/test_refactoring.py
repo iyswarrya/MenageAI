@@ -41,7 +41,10 @@ class MockMemoryRepository:
         self.saved = []
 
     def save_receipt(
-        self, receipt: ReceiptData, household_id: str = "default"
+        self,
+        receipt: ReceiptData,
+        household_id: str = "default",
+        invocation_id: str | None = None,
     ) -> SavedReceiptResult:
         self.saved.append(receipt)
         return SavedReceiptResult(receipt_id=100, success=True)

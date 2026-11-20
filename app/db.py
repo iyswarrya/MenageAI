@@ -109,6 +109,12 @@ def init_db():
         except sqlite3.OperationalError:
             pass
 
+        # Ties a row to the agent run that inserted it. Older rows stay NULL.
+        try:
+            cursor.execute("ALTER TABLE receipts ADD COLUMN invocation_id TEXT")
+        except sqlite3.OperationalError:
+            pass
+
         # Create items table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS items (
@@ -323,13 +329,14 @@ def save_receipt_and_items(
     total: float,
     items: list[tuple[str, float]],
     household_id: str = "default",
+    invocation_id: str | None = None,
 ) -> int:
     """Saves a receipt and its associated items to SQLite. Returns receipt ID."""
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO receipts (store, date, total, household_id) VALUES (?, ?, ?, ?)",
-            (store.strip(), date.strip(), total, household_id),
+            "INSERT INTO receipts (store, date, total, household_id, invocation_id) VALUES (?, ?, ?, ?, ?)",
+            (store.strip(), date.strip(), total, household_id, invocation_id),
         )
         receipt_id = cursor.lastrowid
 
@@ -340,6 +347,23 @@ def save_receipt_and_items(
             )
         conn.commit()
         return receipt_id
+
+
+def receipt_matches_run(receipt_id: int, household_id: str, invocation_id: str) -> bool:
+    """True when this row was inserted for this household during this run."""
+    if type(receipt_id) is not int or receipt_id <= 0:
+        return False
+    if not household_id or not invocation_id:
+        return False
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT 1 FROM receipts
+            WHERE id = ? AND household_id = ? AND invocation_id = ?
+            """,
+            (receipt_id, household_id, invocation_id),
+        ).fetchone()
+    return row is not None
 
 
 def get_deals_for_items(items: list[tuple[str, float]]) -> list[dict[str, Any]]:
