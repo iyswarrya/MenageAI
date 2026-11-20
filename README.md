@@ -164,7 +164,7 @@ The application includes WhatsApp interaction via Twilio webhooks (SEC-01 Phase 
 
 ## 🐳 Docker Containerization & Submissions
 
-The project is fully productionized with Docker and docker-compose configurations.
+The project is fully productionized with Docker and docker-compose configurations. `.dockerignore` keeps local SQLite databases, `.env` files, credentials, and receipt data out of the image. Isolated Cloud Run staging is in `deployment/README.md` Section 7.
 
 ### Standalone Local Running (One Command)
 To build and run the entire suite (FastAPI Agent service, retail MCP server service, and databases) locally in containers with a single command:

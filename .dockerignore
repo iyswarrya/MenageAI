@@ -1,0 +1,59 @@
+# Build context exclusions for the Cloud Run image.
+# The Dockerfile copies pyproject.toml, README.md, app/, and mcp_server/.
+# Keep those sources. Exclude local state, secrets, and caches.
+
+# Git metadata
+.git
+.github
+
+# Virtual environments
+.venv
+.venv*
+venv/
+env/
+
+# Environment files. .env.example has placeholders only.
+.env
+.env.*
+!.env.example
+
+# Credentials and keys
+*.pem
+*-key.json
+*credentials*.json
+*service-account*.json
+*serviceAccount*.json
+**/application_default_credentials.json
+
+# SQLite databases and private receipt storage
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+app/family_receipts.db
+app/db_data
+**/receipts
+**/uploads
+
+# Caches and local tooling
+__pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.cache
+.coverage
+htmlcov
+.adk
+.google-agents-cli
+.terraform
+*.tfstate
+*.tfstate.*
+my_env.tfvars
+
+# Not used by the image build
+tests
+deployment
+*.md
+!README.md
